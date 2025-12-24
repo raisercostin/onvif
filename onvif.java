@@ -16,6 +16,7 @@ import com.fasterxml.jackson.databind.*;
 import com.fasterxml.jackson.dataformat.xml.XmlMapper;
 import com.fasterxml.jackson.dataformat.yaml.YAMLMapper;
 
+import java.io.Console;
 import java.net.*;
 import java.net.http.*;
 import java.nio.charset.StandardCharsets;
@@ -42,7 +43,7 @@ public class onvif {
     throw (E) e;
   }
 
-  @Command(name = "onvif", mixinStandardHelpOptions = true, version = "1.8.2", subcommands = {
+  @Command(name = "onvif", mixinStandardHelpOptions = true, version = "1.9.0", subcommands = {
       MainCommand.DeviceCmd.class,
       CommandLine.HelpCommand.class
   })
@@ -71,46 +72,149 @@ public class onvif {
       discover();
     }
 
-    // --- DEVICE MANAGEMENT ---
-    @Command(name = "device", description = "Manage saved device profiles.")
+    // --- DEVICE MANAGEMENT MODULE ---
+    @Command(name = "device", description = "Manage ONVIF device inventory.")
     public static class DeviceCmd {
 
       @ParentCommand
-      MainCommand parent; // Access to global -u, -p, and URL via parent logic
+      MainCommand parent;
 
-      @Command(description = "Add or update a device profile.")
+      @Command(description = "Manually add a device profile.")
       public void add(
-          @Parameters(index = "0", description = "Device alias (e.g., kitchen)") String name,
-          @Option(names = "--url", required = true, description = "Device Service URL") String url) {
-        // We pull user/pass from the global flags inherited by the parent
+          @Parameters(index = "0", description = "Device alias") String name,
+          @Option(names = "--url", required = true, description = "Service URL") String url) {
+        // Logic: CLI flags take priority for registration credentials
         if (parent.user == null || parent.pass == null) {
           throw new RuntimeException(
-              "Missing credentials. Use: onvif -u <user> -p <pass> device add " + name + " --url <url>");
+              "Provide credentials: onvif -u <user> -p <pass> device add " + name + " --url <url>");
         }
-
         Config cfg = Config.load();
         cfg.devices.put(name, new DeviceProfile(url, parent.user, parent.pass));
-        if (cfg.activeDevice == null)
-          cfg.activeDevice = name;
         cfg.save();
-        System.out.println("Device '" + name + "' saved successfully.");
+        System.out.println("Device '" + name + "' added manually.");
       }
 
-      @Command(description = "Set the active device.")
+      @Command(name = "register", description = "Scan and auto-register new devices.")
+      public void register() {
+        Set<String> discovered = Collections.synchronizedSet(new HashSet<>());
+        parent.runDiscovery(discovered, true);
+        if (discovered.isEmpty())
+          return;
+
+        Config cfg = Config.load();
+        Console console = System.console();
+
+        // Interactive TTY fallback for bulk registration
+        if (parent.user == null && parent.pass == null && console != null) {
+          System.out.println("\n--- Registration Credentials ---");
+          parent.user = console.readLine("Default Username [admin]: ");
+          if (parent.user.isEmpty())
+            parent.user = "admin";
+          parent.pass = new String(console.readPassword("Default Password: "));
+        }
+
+        for (String url : discovered) {
+          String alias = generateAlias(url);
+          if (!cfg.devices.containsKey(alias)) {
+            cfg.devices.put(alias, new DeviceProfile(url,
+                parent.user != null ? parent.user : "admin",
+                parent.pass != null ? parent.pass : "admin"));
+            System.out.printf("Registered: %-12s -> %s%n", alias, url);
+          }
+        }
+        cfg.save();
+      }
+
+      @Command(description = "Update credentials or URL for an existing device.")
+      public void update(
+          @Parameters(description = "Device alias") String name,
+          @Option(names = "--url", description = "New service URL") String url // Added this
+      ) {
+        Config cfg = Config.load();
+        DeviceProfile p = cfg.devices.get(name);
+        if (p == null)
+          throw new RuntimeException("Device '" + name + "' not found.");
+
+        if (url != null)
+          p.url = url; // Update URL if provided
+        if (parent.user != null)
+          p.user = parent.user;
+        if (parent.pass != null)
+          p.pass = parent.pass;
+
+        cfg.save();
+        System.out.println("Device '" + name + "' updated.");
+      }
+
+      @Command(description = "List devices with optional liveness check and network discovery.")
+      public void list(
+          @Option(names = { "--all", "-a" }, description = "Show registered and scan for new") boolean all,
+          @Option(names = {
+              "--unregistered" }, description = "Show only discovered but not saved") boolean unregistered,
+          @Option(names = { "--check", "-c" }, description = "Perform liveness ping") boolean check) {
+        Config cfg = Config.load();
+        Set<String> onNetwork = new HashSet<>();
+
+        if (all || unregistered) {
+          log.info("Scanning network...");
+          parent.runDiscovery(onNetwork, true);
+        }
+
+        // Header - Hidden if --quiet is used
+        if (!parent.isQuiet()) {
+          System.out.printf("%-2s %-15s %-45s %-10s %-10s%n", "", "ALIAS", "URL", "USER", check ? "STATUS" : "");
+          System.out.println("-".repeat(90));
+        }
+
+        // 1. Process Registered Devices
+        if (!unregistered) {
+          cfg.devices.forEach((name, p) -> {
+            String marker = name.equals(cfg.activeDevice) ? "*" : " ";
+            String status = check ? (isAlive(p.url) ? "✅ ONLINE" : "❌ OFFLINE") : "";
+            System.out.printf("%s %-15s %-45s %-10s %-10s%n", marker, name, p.url, p.user, status);
+            onNetwork.remove(p.url);
+          });
+        }
+
+        // 2. Process Unregistered Devices
+        if (all || unregistered) {
+          for (String url : onNetwork) {
+            System.out.printf("  %-15s %-45s %-10s %-10s%n", "[NEW]", url, "-", "NOT SAVED");
+          }
+        }
+      }
+
+      @Command(description = "Select the default device.")
       public void use(@Parameters String name) {
         Config cfg = Config.load();
         if (!cfg.devices.containsKey(name))
-          throw new RuntimeException("Device '" + name + "' not found.");
+          throw new RuntimeException("Unknown alias: " + name);
         cfg.activeDevice = name;
         cfg.save();
-        System.out.println("Active device set to: " + name);
+        System.out.println("Active device: " + name);
       }
 
-      @Command(description = "List all saved devices.")
-      public void list() {
-        Config cfg = Config.load();
-        cfg.devices.forEach((name, p) -> System.out.printf("%s %-15s -> %s (%s)%n",
-            name.equals(cfg.activeDevice) ? "*" : " ", name, p.url, p.user));
+      // --- PRIVATE HELPERS ---
+
+      private boolean isAlive(String url) {
+        try {
+          HttpClient client = HttpClient.newBuilder()
+              .connectTimeout(java.time.Duration.ofMillis(1000)).build();
+          HttpRequest req = HttpRequest.newBuilder().uri(URI.create(url))
+              .method("HEAD", HttpRequest.BodyPublishers.noBody()).build();
+          return client.send(req, HttpResponse.BodyHandlers.discarding()).statusCode() == 200;
+        } catch (Exception e) {
+          return false;
+        }
+      }
+
+      private String generateAlias(String url) {
+        try {
+          String host = URI.create(url).getHost();
+          return "cam-" + host.substring(host.lastIndexOf('.') + 1);
+        } catch (Exception e) {
+          return "cam-" + UUID.randomUUID().toString().substring(0, 4);
+        }
       }
     }
 
@@ -118,18 +222,20 @@ public class onvif {
 
     @Command(description = "Discover ONVIF devices.")
     public void discover() {
-      log.info("Starting discovery...");
       Set<String> discovered = Collections.synchronizedSet(new HashSet<>());
+      runDiscovery(discovered, false);
+      log.info("Found {} devices.", discovered.size());
+    }
+
+    public void runDiscovery(Set<String> discovered, boolean silent) {
+      if (!silent)
+        log.info("Starting discovery...");
       List<InetAddress> interfaces = getActiveIPv4Interfaces();
       ExecutorService executor = Executors.newFixedThreadPool(interfaces.size());
       try {
         List<CompletableFuture<Void>> futures = interfaces.stream()
             .map(addr -> CompletableFuture.runAsync(() -> {
-              try {
-                sendProbes(addr, discovered);
-              } catch (Exception e) {
-                log.debug("Interface failed: {}", addr);
-              }
+              sendProbes(addr, discovered, silent);
             }, executor)).collect(Collectors.toList());
         CompletableFuture.allOf(futures.toArray(new CompletableFuture[0])).join();
       } finally {
@@ -139,30 +245,28 @@ public class onvif {
     }
 
     @Command(description = "Get all available RTSP Stream URIs.")
-    public void stream(@Parameters(arity = "0..1", description = "Device Service URL") String urlParam) {
+    public void stream(@Parameters(arity = "0..1") String urlParam) {
       Target t = resolveTarget(urlParam);
       try {
-        String capSoap = buildSoapEnvelope(t.user, t.pass,
-            "<GetCapabilities xmlns=\"http://www.onvif.org/ver10/device/wsdl\"><Category>Media</Category></GetCapabilities>");
-        String capRes = postSoap(t.url, capSoap);
+        String capRes = postSoap(t.url, buildSoapEnvelope(t.user, t.pass,
+            "<GetCapabilities xmlns=\"http://www.onvif.org/ver10/device/wsdl\"><Category>Media</Category></GetCapabilities>"));
         String mediaUrl = extractTag(capRes, "tt:XAddr");
         String targetUrl = (mediaUrl != null) ? mediaUrl : t.url;
 
-        String profilesSoap = buildSoapEnvelope(t.user, t.pass,
-            "<GetProfiles xmlns=\"http://www.onvif.org/ver10/media/wsdl\"/>");
-        String profRes = postSoap(targetUrl, profilesSoap);
+        String profRes = postSoap(targetUrl,
+            buildSoapEnvelope(t.user, t.pass, "<GetProfiles xmlns=\"http://www.onvif.org/ver10/media/wsdl\"/>"));
         List<OnvifProfile> profiles = parseProfiles(profRes);
 
         for (OnvifProfile profile : profiles) {
           String streamSoap = buildSoapEnvelope(t.user, t.pass,
               "<GetStreamUri xmlns=\"http://www.onvif.org/ver10/media/wsdl\"><StreamSetup>" +
                   "<Stream xmlns=\"http://www.onvif.org/ver10/schema\">RTP-Unicast</Stream>" +
-                  "<Transport xmlns=\"http://www.onvif.org/ver10/schema\"><Protocol>RTSP</Protocol></Transport>" +
-                  "</StreamSetup><ProfileToken>" + profile.token + "</ProfileToken></GetStreamUri>");
+                  "<Transport xmlns=\"http://www.onvif.org/ver10/schema\"><Protocol>RTSP</Protocol></Transport></StreamSetup>"
+                  +
+                  "<ProfileToken>" + profile.token + "</ProfileToken></GetStreamUri>");
           String streamRes = postSoap(targetUrl, streamSoap);
-          String rtspUri = extractTag(streamRes, "tt:Uri");
-          System.out.printf("Profile: %-15s | Token: %-10s | Res: %-10s | URI: %s%n", profile.name, profile.token,
-              profile.resolution, rtspUri);
+          System.out.printf("Profile: %-15s | Token: %-10s | Res: %-10s | URI: %s%n",
+              profile.name, profile.token, profile.resolution, extractTag(streamRes, "tt:Uri"));
         }
       } catch (Exception e) {
         throw sneakyThrow(e);
@@ -170,12 +274,11 @@ public class onvif {
     }
 
     @Command(description = "Dump full camera profiles as JSON.")
-    public void dump(@Parameters(arity = "0..1", description = "Device Service URL") String urlParam) {
+    public void dump(@Parameters(arity = "0..1") String urlParam) {
       Target t = resolveTarget(urlParam);
       try {
-        String soap = buildSoapEnvelope(t.user, t.pass,
-            "<GetProfiles xmlns=\"http://www.onvif.org/ver10/media/wsdl\"/>");
-        String xmlResponse = postSoap(t.url, soap);
+        String xmlResponse = postSoap(t.url,
+            buildSoapEnvelope(t.user, t.pass, "<GetProfiles xmlns=\"http://www.onvif.org/ver10/media/wsdl\"/>"));
         JsonNode profiles = new XmlMapper().readTree(xmlResponse.getBytes()).get("Body").get("GetProfilesResponse");
         System.out.println(new ObjectMapper().writerWithDefaultPrettyPrinter().writeValueAsString(profiles));
       } catch (Exception e) {
@@ -183,7 +286,7 @@ public class onvif {
       }
     }
 
-    // --- LOGIC HELPERS ---
+    // --- INTERNAL HELPERS ---
 
     private Target resolveTarget(String positionalUrl) {
       Config cfg = Config.load();
@@ -196,41 +299,10 @@ public class onvif {
       t.pass = (pass != null) ? pass : profile.pass;
 
       if (t.url == null)
-        throw new RuntimeException("Target URL missing. Use 'onvif device use <name>' or pass a URL.");
+        throw new RuntimeException("Target URL missing. Run 'device register' or pass URL.");
       if (t.user == null || t.pass == null)
-        throw new RuntimeException("Credentials missing. Use -u/-p or configure a device.");
+        throw new RuntimeException("Credentials missing. Use -u/-p or 'device update'.");
       return t;
-    }
-
-    private List<OnvifProfile> parseProfiles(String xml) {
-      log.debug("Parsing {}", xml);
-      List<OnvifProfile> list = new ArrayList<>();
-      Matcher m = Pattern.compile(
-          "<trt:Profiles.*?token=\"(.*?)\">.*?<tt:Name>(.*?)</tt:Name>.*?<tt:Width>(\\d+)</tt:Width>.*?<tt:Height>(\\d+)</tt:Height>",
-          Pattern.DOTALL).matcher(xml);
-      while (m.find()) {
-        OnvifProfile p = new OnvifProfile();
-        p.token = m.group(1);
-        p.name = m.group(2);
-        p.resolution = m.group(3) + "x" + m.group(4);
-        list.add(p);
-      }
-      if (list.isEmpty()) {
-        Matcher m2 = Pattern.compile("token=\"([^\"]+)\"").matcher(xml);
-        while (m2.find()) {
-          OnvifProfile p = new OnvifProfile();
-          p.token = m2.group(1);
-          p.name = "Unknown";
-          p.resolution = "N/A";
-          list.add(p);
-        }
-      }
-      return list;
-    }
-
-    private String extractTag(String xml, String tag) {
-      Matcher m = Pattern.compile("<" + tag + ">(.*?)</" + tag + ">").matcher(xml);
-      return m.find() ? m.group(1) : null;
     }
 
     private String postSoap(String url, String xml) {
@@ -286,54 +358,47 @@ public class onvif {
           + created + "</Created></UsernameToken></Security></s:Header><s:Body>" + body + "</s:Body></s:Envelope>";
     }
 
-    private String calculateDigest(String nonceBase64, String created, String password) throws Exception {
-      byte[] nonce = Base64.getDecoder().decode(nonceBase64);
+    private String calculateDigest(String nonceB64, String created, String pass) throws Exception {
       MessageDigest md = MessageDigest.getInstance("SHA-1");
-      md.update(nonce);
+      md.update(Base64.getDecoder().decode(nonceB64));
       md.update(created.getBytes(StandardCharsets.UTF_8));
-      md.update(password.getBytes(StandardCharsets.UTF_8));
+      md.update(pass.getBytes(StandardCharsets.UTF_8));
       return Base64.getEncoder().encodeToString(md.digest());
     }
 
-    private void sendProbes(InetAddress sourceIp, Set<String> discovered) throws Exception {
-      String multicastIp = "239.255.255.250";
-      int port = 3702;
-
-      try (DatagramSocket socket = new DatagramSocket(new InetSocketAddress(sourceIp, 0))) {
+    private void sendProbes(InetAddress source, Set<String> discovered, boolean silent) {
+      try (DatagramSocket socket = new DatagramSocket(new InetSocketAddress(source, 0))) {
         socket.setSoTimeout(500);
-
-        String probeXml = buildProbeXml();
+        String probeXml = "<?xml version=\"1.0\" encoding=\"utf-8\"?><e:Envelope xmlns:e=\"http://www.w3.org/2003/05/soap-envelope\" xmlns:w=\"http://schemas.xmlsoap.org/ws/2004/08/addressing\" xmlns:d=\"http://schemas.xmlsoap.org/ws/2005/04/discovery\"><e:Header><w:MessageID>uuid:"
+            + UUID.randomUUID()
+            + "</w:MessageID><w:To>urn:schemas-xmlsoap-org:ws:2005:04:discovery</w:To><w:Action>http://schemas.xmlsoap.org/ws/2005/04/discovery/Probe</w:Action></e:Header><e:Body><d:Probe><d:Types>dn:NetworkVideoTransmitter</d:Types></d:Probe></e:Body></e:Envelope>";
         byte[] data = probeXml.getBytes(StandardCharsets.UTF_8);
-        DatagramPacket packet = new DatagramPacket(data, data.length, InetAddress.getByName(multicastIp), port);
-
-        long globalEnd = System.currentTimeMillis() + (timeout * 1000L);
+        DatagramPacket packet = new DatagramPacket(data, data.length, InetAddress.getByName("239.255.255.250"), 3702);
 
         for (int i = 0; i < retries; i++) {
-          if (System.currentTimeMillis() >= globalEnd)
-            break;
-
-          log.debug("Probe #{} from {}", (i + 1), sourceIp.getHostAddress());
           socket.send(packet);
-
-          long windowEnd = System.currentTimeMillis() + ((timeout * 1000L) / retries);
+          long end = System.currentTimeMillis() + 1000;
           byte[] buf = new byte[8192];
-
-          while (System.currentTimeMillis() < windowEnd && System.currentTimeMillis() < globalEnd) {
+          while (System.currentTimeMillis() < end) {
             try {
               DatagramPacket reply = new DatagramPacket(buf, buf.length);
               socket.receive(reply);
-              String xml = new String(reply.getData(), 0, reply.getLength(), StandardCharsets.UTF_8);
-              String url = extractUrl(xml);
-
+              String url = extractUrl(new String(reply.getData(), 0, reply.getLength(), StandardCharsets.UTF_8));
               if (url != null && discovered.add(url)) {
-                log.info("Discovered: {} (Source IP: {})", url, reply.getAddress().getHostAddress());
-                System.out.println(url);
+                if (!silent)
+                  System.out.println(url);
+                else
+                  log.info("Found device: {}", url);
               }
-            } catch (SocketTimeoutException e) {
-              log.trace("timeout", e);
+            } catch (Exception e) {
+              log.warn("No response received on interface {}.", source.getHostAddress(), e);
             }
           }
         }
+      } catch (java.net.SocketTimeoutException e) {
+        log.warn("No response received on interface {}.", source.getHostAddress());
+      } catch (Exception e) {
+        throw sneakyThrow(e);
       }
     }
 
@@ -343,15 +408,13 @@ public class onvif {
             .filter(ni -> {
               try {
                 return ni.isUp() && !ni.isLoopback() && ni.supportsMulticast();
-              } catch (SocketException e) {
+              } catch (Exception e) {
                 return false;
               }
             })
-            .flatMap(ni -> ni.getInterfaceAddresses().stream())
-            .map(InterfaceAddress::getAddress)
-            .filter(addr -> addr instanceof Inet4Address)
-            .collect(Collectors.toList());
-      } catch (SocketException e) {
+            .flatMap(ni -> ni.getInterfaceAddresses().stream()).map(InterfaceAddress::getAddress)
+            .filter(addr -> addr instanceof Inet4Address).collect(Collectors.toList());
+      } catch (Exception e) {
         throw sneakyThrow(e);
       }
     }
@@ -365,6 +428,26 @@ public class onvif {
     private String extractUrl(String xml) {
       Matcher m = Pattern.compile("(http://[0-9\\.:]+/onvif/[a-zA-Z0-9_]+)").matcher(xml);
       return m.find() ? m.group(1) : null;
+    }
+
+    private String extractTag(String xml, String tag) {
+      Matcher m = Pattern.compile("<" + tag + "[^>]*>(.*?)</" + tag + ">").matcher(xml);
+      return m.find() ? m.group(1) : null;
+    }
+
+    private List<OnvifProfile> parseProfiles(String xml) {
+      List<OnvifProfile> list = new ArrayList<>();
+      Matcher m = Pattern.compile("token=\"([^\"]+)\".*?<tt:Name>([^<]+)", Pattern.DOTALL).matcher(xml);
+      while (m.find()) {
+        OnvifProfile p = new OnvifProfile();
+        p.token = m.group(1);
+        p.name = m.group(2);
+        Matcher resM = Pattern.compile("<tt:Width>(\\d+)</tt:Width>.*?<tt:Height>(\\d+)</tt:Height>", Pattern.DOTALL)
+            .matcher(xml.substring(m.start()));
+        p.resolution = resM.find() ? resM.group(1) + "x" + resM.group(2) : "N/A";
+        list.add(p);
+      }
+      return list;
     }
   }
 

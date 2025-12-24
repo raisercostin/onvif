@@ -16,6 +16,7 @@ import ch.qos.logback.core.spi.FilterReply;
 import picocli.CommandLine;
 import picocli.CommandLine.Help.Visibility;
 import picocli.CommandLine.Option;
+import picocli.CommandLine.ScopeType;
 import picocli.CommandLine.TraceLevel;
 
 /**
@@ -52,22 +53,29 @@ public class RichLogback {
   private static final Logger log = LoggerFactory.getLogger(RichLogback.class);
 
   public static class BaseOptions {
-    @Option(names = { "-q", "--quiet" }, description = "Suppress almost all log output. Use multiple (-qqq)")
+    @Option(names = { "-q",
+        "--quiet" }, description = "Suppress almost all log output. Use multiple (-qqq)", scope = ScopeType.INHERIT)
     public boolean[] quiet = new boolean[0];
 
-    @Option(names = { "-v", "--verbose" }, description = "Increase verbosity. Use multiple (-vvv)")
+    @Option(names = { "-v",
+        "--verbose" }, description = "Increase verbosity. Use multiple (-vvv)", scope = ScopeType.INHERIT)
     public boolean[] verbosity = new boolean[0];
 
-    @Option(names = { "-c",
-        "--color" }, description = "Enable colored output (default: true).", defaultValue = "true", negatable = true, showDefaultValue = Visibility.ALWAYS)
+    @Option(names = { "-co",
+        "--color" }, description = "Enable colored output (default: true).", defaultValue = "true", negatable = true, showDefaultValue = Visibility.ALWAYS, scope = ScopeType.INHERIT)
     public boolean color = true;
 
-    @Option(names = {
-        "--debug" }, description = "Enable debug (default: false).", defaultValue = "false", showDefaultValue = Visibility.ALWAYS)
+    @Option(names = { "-de",
+        "--debug" }, description = "Enable debug (default: false).", defaultValue = "false", showDefaultValue = Visibility.ALWAYS, scope = ScopeType.INHERIT)
     public boolean debug = false;
 
-    @Option(names = { "--workdir" }, description = "Base directory for operations (default: current dir)")
+    @Option(names = {
+        "--workdir" }, description = "Base directory for operations (default: current dir)", scope = ScopeType.INHERIT)
     public String workdir = System.getProperty("user.dir");
+
+    public boolean isQuiet() {
+      return verbosity.length - quiet.length < LEVEL0_NORMAL;
+    }
   }
 
   public static class LevelColorConverter extends ForegroundCompositeConverterBase<ILoggingEvent> {
