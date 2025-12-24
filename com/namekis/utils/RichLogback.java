@@ -62,7 +62,7 @@ public class RichLogback {
         "--color" }, description = "Enable colored output (default: true).", defaultValue = "true", negatable = true, showDefaultValue = Visibility.ALWAYS)
     public boolean color = true;
 
-    @Option(names = { "-d",
+    @Option(names = {
         "--debug" }, description = "Enable debug (default: false).", defaultValue = "false", showDefaultValue = Visibility.ALWAYS)
     public boolean debug = false;
 
@@ -75,19 +75,19 @@ public class RichLogback {
     protected String getForegroundColorCode(ILoggingEvent event) {
       Level level = event.getLevel();
       switch (level.toInt()) {
-      case Level.ERROR_INT:
-        return ANSIConstants.BOLD + "91";// ANSIConstants.RED_FG;
-      case Level.WARN_INT:
-        return "91";// ANSIConstants.RED_FG;
-      case Level.INFO_INT:
-        // return "33";//
-        return ANSIConstants.DEFAULT_FG;
-      case Level.DEBUG_INT:
-        return ANSIConstants.YELLOW_FG;
-      case Level.TRACE_INT:
-        return ANSIConstants.MAGENTA_FG;
-      default:
-        return ANSIConstants.DEFAULT_FG;
+        case Level.ERROR_INT:
+          return ANSIConstants.BOLD + "91";// ANSIConstants.RED_FG;
+        case Level.WARN_INT:
+          return "91";// ANSIConstants.RED_FG;
+        case Level.INFO_INT:
+          // return "33";//
+          return ANSIConstants.DEFAULT_FG;
+        case Level.DEBUG_INT:
+          return ANSIConstants.YELLOW_FG;
+        case Level.TRACE_INT:
+          return ANSIConstants.MAGENTA_FG;
+        default:
+          return ANSIConstants.DEFAULT_FG;
       }
     }
   }
