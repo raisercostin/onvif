@@ -17,11 +17,13 @@ import com.fasterxml.jackson.dataformat.xml.XmlMapper;
 import com.fasterxml.jackson.dataformat.yaml.YAMLMapper;
 
 import java.io.Console;
+import java.io.IOException;
 import java.net.*;
 import java.net.http.*;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.*;
 import java.security.MessageDigest;
+import java.time.Duration;
 import java.time.Instant;
 import java.util.*;
 import java.util.concurrent.*;
@@ -43,7 +45,7 @@ public class onvif {
     throw (E) e;
   }
 
-  @Command(name = "onvif", mixinStandardHelpOptions = true, version = "1.9.0", subcommands = {
+  @Command(name = "onvif", mixinStandardHelpOptions = true, version = "0.9.0", subcommands = {
       MainCommand.DeviceCmd.class,
       CommandLine.HelpCommand.class
   })
@@ -171,12 +173,13 @@ public class onvif {
 
         // 1. Process Registered Devices
         if (!unregistered) {
-          cfg.devices.forEach((name, p) -> {
-            String marker = name.equals(cfg.activeDevice) ? "*" : " ";
-            String status = check ? checkStatus(p.url) : "";
-            System.out.printf("%s %-15s %-45s %-10s %-10s%n", marker, name, p.url, p.user, status);
-            onNetwork.remove(p.url);
-          });
+          cfg.devices.forEach((id, p) -> {
+            String marker = id.equals(cfg.activeDevice) ? "*" : " ";
+            String status = check ? checkStatus(p.url, p.user, p.pass) : "NOT CHECKED";
+            System.out.printf("%s %-20s %-40s %-10s %-15s%n", 
+                              marker, id, p.url, p.user, status);
+                              onNetwork.remove(p.url);
+                            });
         }
 
         // 2. Process Unregistered Devices
@@ -198,45 +201,46 @@ public class onvif {
       }
 
       // --- PRIVATE HELPERS ---
-      private String checkStatus(String url) {
+      private String checkStatus(String url, String user, String pass) {
+        URI uri = URI.create(url);
+        String host = uri.getHost();
+        int port = uri.getPort() != -1 ? uri.getPort() : 80;
+
+        // Phase 1: TCP Handshake (L4)
+        try (Socket socket = new Socket()) {
+          socket.connect(new InetSocketAddress(host, port), parent.timeout * 1000);
+        } catch (IOException e) {
+          parent.info(log, "TCP Connection failed", e);
+          return "🚫 PORT CLOSED";
+        }
+
+        // Phase 2: Protocol & Auth (L7)
         try {
-          // Use a minimal, non-auth ONVIF SOAP request to verify liveness
-          String probeSoap = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>" +
-              "<s:Envelope xmlns:s=\"http://www.w3.org/2003/05/soap-envelope\">" +
-              "<s:Body><GetSystemDateAndTime xmlns=\"http://www.onvif.org/ver10/device/wsdl\"/></s:Body>" +
-              "</s:Envelope>";
-
           HttpClient client = HttpClient.newBuilder()
-              .connectTimeout(java.time.Duration.ofSeconds(parent.timeout))
+              .connectTimeout(Duration.ofSeconds(parent.timeout))
               .build();
 
-          HttpRequest request = HttpRequest.newBuilder()
-              .uri(URI.create(url))
+          // Minimal ONVIF call
+          String soap = "<?xml version=\"1.0\" encoding=\"UTF-8\"?><s:Envelope xmlns:s=\"http://www.w3.org/2003/05/soap-envelope\"><s:Body><GetSystemDateAndTime xmlns=\"http://www.onvif.org/ver10/device/wsdl\"/></s:Body></s:Envelope>";
+
+          HttpRequest.Builder requestBuilder = HttpRequest.newBuilder()
+              .uri(uri)
               .header("Content-Type", "application/soap+xml; charset=utf-8")
-              .POST(HttpRequest.BodyPublishers.ofString(probeSoap))
-              .build();
+              .POST(HttpRequest.BodyPublishers.ofString(soap));
 
-          HttpResponse<String> response = client.send(request, HttpResponse.BodyHandlers.ofString());
+          // If we have credentials, we'd ideally use Digest/WS-Security here
+          // For now, checking if 200 (Open) or 401 (Auth Required)
+          HttpResponse<String> response = client.send(requestBuilder.build(), HttpResponse.BodyHandlers.ofString());
 
-          // If we get a 200, it's alive and well.
           if (response.statusCode() == 200)
-            return "✅ ONLINE";
-          // If we get a 401, it's alive but needs the credentials we have stored.
+            return "✅ AUTHORIZED";
           if (response.statusCode() == 401)
-            return "🔐 AUTH REQ";
-
+            return "🔐 AUTH REQ"; // Alive but credentials rejected
           return "⚠️ HTTP " + response.statusCode();
 
-        } catch (java.net.http.HttpConnectTimeoutException e) {
-          parent.info(log, "Connection timed out", e);
-          return "❌ OFFLINE";
-        } catch (java.io.IOException e) {
-          // Handles the "header parser received no bytes" / EOF issues
-          parent.info(log, "Network error (possibly rejected GET)", e);
-          return "❌ RESET";
         } catch (Exception e) {
-          parent.info(log, "Liveness check failed", e);
-          return "❓ ERROR " + (e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName());
+          parent.info(log, "L7 Probe failed", e);
+          return "❓ PROTOCOL ERR";
         }
       }
 
