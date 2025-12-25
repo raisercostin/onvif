@@ -69,12 +69,32 @@ public class RichLogback {
         "--debug" }, description = "Enable debug (default: false).", defaultValue = "false", showDefaultValue = Visibility.ALWAYS, scope = ScopeType.INHERIT)
     public boolean debug = false;
 
+    @Option(names = { "-tr",
+        "--trace" }, description = "Show full stack traces for errors.", defaultValue = "false", scope = ScopeType.INHERIT)
+    public boolean trace = false;
+
     @Option(names = {
         "--workdir" }, description = "Base directory for operations (default: current dir)", scope = ScopeType.INHERIT)
     public String workdir = System.getProperty("user.dir");
 
     public boolean isQuiet() {
       return verbosity.length - quiet.length < LEVEL0_NORMAL;
+    }
+
+    public void info(Logger log, String message, Exception e) {
+      if (trace) {
+        log.info("{}:", message, e);
+      } else {
+        log.info("{}: {}. (Use --trace for full stack trace)", message, e.getMessage());
+      }
+    }
+
+    public void debug(Logger log, String message, Exception e) {
+      if (trace) {
+        log.debug("{}:", message, e);
+      } else {
+        log.debug("{}: {}. (Use --trace for full stack trace)", message, e.getMessage());
+      }
     }
   }
 

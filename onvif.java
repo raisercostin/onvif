@@ -48,11 +48,12 @@ public class onvif {
       CommandLine.HelpCommand.class
   })
   public static class MainCommand extends RichLogback.BaseOptions implements Runnable {
-
-    @Option(names = { "-t", "--timeout" }, defaultValue = "5", scope = ScopeType.INHERIT)
+    @Option(names = { "-t",
+        "--timeout" }, defaultValue = "5", description = "Network timeout in seconds (default: 5).", scope = ScopeType.INHERIT)
     int timeout;
 
-    @Option(names = { "-r", "--retries" }, defaultValue = "3", scope = ScopeType.INHERIT)
+    @Option(names = { "-r",
+        "--retries" }, defaultValue = "3", description = "Number of UDP probe attempts per interface (default: 3).", scope = ScopeType.INHERIT)
     int retries;
 
     @Option(names = { "-d", "--device" }, description = "Target device alias", scope = ScopeType.INHERIT)
@@ -107,10 +108,12 @@ public class onvif {
         // Interactive TTY fallback for bulk registration
         if (parent.user == null && parent.pass == null && console != null) {
           System.out.println("\n--- Registration Credentials ---");
+          System.out.println("The following credentials will be applied to ALL newly discovered devices.");
           parent.user = console.readLine("Default Username [admin]: ");
-          if (parent.user.isEmpty())
+          if (parent.user == null || parent.user.isEmpty())
             parent.user = "admin";
-          parent.pass = new String(console.readPassword("Default Password: "));
+          char[] passwordChars = console.readPassword("Default Password: ");
+          parent.pass = (passwordChars != null) ? new String(passwordChars) : "";
         }
 
         for (String url : discovered) {
@@ -170,7 +173,7 @@ public class onvif {
         if (!unregistered) {
           cfg.devices.forEach((name, p) -> {
             String marker = name.equals(cfg.activeDevice) ? "*" : " ";
-            String status = check ? (isAlive(p.url) ? "✅ ONLINE" : "❌ OFFLINE") : "";
+            String status = check ? checkStatus(p.url) : "";
             System.out.printf("%s %-15s %-45s %-10s %-10s%n", marker, name, p.url, p.user, status);
             onNetwork.remove(p.url);
           });
@@ -195,6 +198,47 @@ public class onvif {
       }
 
       // --- PRIVATE HELPERS ---
+      private String checkStatus(String url) {
+        try {
+          // Use a minimal, non-auth ONVIF SOAP request to verify liveness
+          String probeSoap = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>" +
+              "<s:Envelope xmlns:s=\"http://www.w3.org/2003/05/soap-envelope\">" +
+              "<s:Body><GetSystemDateAndTime xmlns=\"http://www.onvif.org/ver10/device/wsdl\"/></s:Body>" +
+              "</s:Envelope>";
+
+          HttpClient client = HttpClient.newBuilder()
+              .connectTimeout(java.time.Duration.ofSeconds(parent.timeout))
+              .build();
+
+          HttpRequest request = HttpRequest.newBuilder()
+              .uri(URI.create(url))
+              .header("Content-Type", "application/soap+xml; charset=utf-8")
+              .POST(HttpRequest.BodyPublishers.ofString(probeSoap))
+              .build();
+
+          HttpResponse<String> response = client.send(request, HttpResponse.BodyHandlers.ofString());
+
+          // If we get a 200, it's alive and well.
+          if (response.statusCode() == 200)
+            return "✅ ONLINE";
+          // If we get a 401, it's alive but needs the credentials we have stored.
+          if (response.statusCode() == 401)
+            return "🔐 AUTH REQ";
+
+          return "⚠️ HTTP " + response.statusCode();
+
+        } catch (java.net.http.HttpConnectTimeoutException e) {
+          parent.info(log, "Connection timed out", e);
+          return "❌ OFFLINE";
+        } catch (java.io.IOException e) {
+          // Handles the "header parser received no bytes" / EOF issues
+          parent.info(log, "Network error (possibly rejected GET)", e);
+          return "❌ RESET";
+        } catch (Exception e) {
+          parent.info(log, "Liveness check failed", e);
+          return "❓ ERROR " + (e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName());
+        }
+      }
 
       private boolean isAlive(String url) {
         try {
@@ -367,37 +411,50 @@ public class onvif {
     }
 
     private void sendProbes(InetAddress source, Set<String> discovered, boolean silent) {
+      int windowMillis = (timeout * 1000) / retries;
+
       try (DatagramSocket socket = new DatagramSocket(new InetSocketAddress(source, 0))) {
-        socket.setSoTimeout(500);
-        String probeXml = "<?xml version=\"1.0\" encoding=\"utf-8\"?><e:Envelope xmlns:e=\"http://www.w3.org/2003/05/soap-envelope\" xmlns:w=\"http://schemas.xmlsoap.org/ws/2004/08/addressing\" xmlns:d=\"http://schemas.xmlsoap.org/ws/2005/04/discovery\"><e:Header><w:MessageID>uuid:"
-            + UUID.randomUUID()
-            + "</w:MessageID><w:To>urn:schemas-xmlsoap-org:ws:2005:04:discovery</w:To><w:Action>http://schemas.xmlsoap.org/ws/2005/04/discovery/Probe</w:Action></e:Header><e:Body><d:Probe><d:Types>dn:NetworkVideoTransmitter</d:Types></d:Probe></e:Body></e:Envelope>";
+        socket.setSoTimeout(windowMillis);
+
+        String probeXml = buildProbeXml();
         byte[] data = probeXml.getBytes(StandardCharsets.UTF_8);
-        DatagramPacket packet = new DatagramPacket(data, data.length, InetAddress.getByName("239.255.255.250"), 3702);
+        DatagramPacket packet = new DatagramPacket(data, data.length,
+            InetAddress.getByName("239.255.255.250"), 3702);
 
         for (int i = 0; i < retries; i++) {
           socket.send(packet);
-          long end = System.currentTimeMillis() + 1000;
-          byte[] buf = new byte[8192];
-          while (System.currentTimeMillis() < end) {
+          long windowEnd = System.currentTimeMillis() + windowMillis;
+
+          while (System.currentTimeMillis() < windowEnd) {
             try {
+              byte[] buf = new byte[8192];
               DatagramPacket reply = new DatagramPacket(buf, buf.length);
               socket.receive(reply);
-              String url = extractUrl(new String(reply.getData(), 0, reply.getLength(), StandardCharsets.UTF_8));
+
+              String xml = new String(reply.getData(), 0, reply.getLength(), StandardCharsets.UTF_8);
+              String url = extractUrl(xml);
+
               if (url != null && discovered.add(url)) {
                 if (!silent)
                   System.out.println(url);
                 else
                   log.info("Found device: {}", url);
               }
-            } catch (Exception e) {
-              log.warn("No response received on interface {}.", source.getHostAddress(), e);
+            } catch (SocketTimeoutException e) {
+              // EXPECTED FLOW: Discovery window closed or no more devices found.
+              // We log the fact that we handled this for transparency.
+              log.debug(
+                  "SocketTimeoutException: {}. This is expected during discovery. Enable trace for full stacktrace.",
+                  e.getMessage());
+              log.trace("Full stacktrace for handled SocketTimeoutException:", e);
+              break;
             }
           }
         }
-      } catch (java.net.SocketTimeoutException e) {
-        log.warn("No response received on interface {}.", source.getHostAddress());
       } catch (Exception e) {
+        // UNKNOWN/CRITICAL: We don't log here to avoid the "Log and Throw"
+        // anti-pattern.
+        // We let the caller or the global handler deal with the failure.
         throw sneakyThrow(e);
       }
     }
@@ -478,9 +535,15 @@ public class onvif {
 
     static Config load() {
       try {
-        return Files.exists(CONFIG_PATH) ? new YAMLMapper().readValue(CONFIG_PATH.toFile(), Config.class)
-            : new Config();
+        if (Files.exists(CONFIG_PATH)) {
+          log.debug("Loading configuration from: {}", CONFIG_PATH.toAbsolutePath());
+          return new YAMLMapper().readValue(CONFIG_PATH.toFile(), Config.class);
+        }
+        log.debug("No config found at {}, starting fresh.", CONFIG_PATH);
+        return new Config();
       } catch (Exception e) {
+        log.debug("Failed to load config (using defaults): {}. Trace for details.", e.getMessage());
+        log.trace("Config load error:", e);
         return new Config();
       }
     }
@@ -488,6 +551,7 @@ public class onvif {
     void save() {
       try {
         Files.createDirectories(CONFIG_PATH.getParent());
+        log.debug("Saving configuration to: {}", CONFIG_PATH.toAbsolutePath());
         new YAMLMapper().writerWithDefaultPrettyPrinter().writeValue(CONFIG_PATH.toFile(), this);
       } catch (Exception e) {
         throw sneakyThrow(e);
