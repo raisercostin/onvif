@@ -23,8 +23,11 @@ import java.net.http.*;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.*;
 import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
+import java.security.SecureRandom;
 import java.time.Duration;
 import java.time.Instant;
+import java.time.temporal.ChronoUnit;
 import java.util.*;
 import java.util.concurrent.*;
 import java.util.regex.*;
@@ -176,10 +179,10 @@ public class onvif {
           cfg.devices.forEach((id, p) -> {
             String marker = id.equals(cfg.activeDevice) ? "*" : " ";
             String status = check ? checkStatus(p.url, p.user, p.pass) : "NOT CHECKED";
-            System.out.printf("%s %-20s %-40s %-10s %-15s%n", 
-                              marker, id, p.url, p.user, status);
-                              onNetwork.remove(p.url);
-                            });
+            System.out.printf("%s %-20s %-40s %-10s %-15s%n",
+                marker, id, p.url, p.user, status);
+            onNetwork.remove(p.url);
+          });
         }
 
         // 2. Process Unregistered Devices
@@ -206,42 +209,72 @@ public class onvif {
         String host = uri.getHost();
         int port = uri.getPort() != -1 ? uri.getPort() : 80;
 
-        // Phase 1: TCP Handshake (L4)
+        // --- PHASE 1: L4 TCP CHECK (Reachability) ---
+        // We do this first to avoid the overhead of building SOAP if the wire is dead.
         try (Socket socket = new Socket()) {
           socket.connect(new InetSocketAddress(host, port), parent.timeout * 1000);
-        } catch (IOException e) {
-          parent.info(log, "TCP Connection failed", e);
-          return "🚫 PORT CLOSED";
+        } catch (Exception e) {
+          // Use parent.info for diagnostic transparency
+          parent.info(log, "L4 TCP connection failed to " + host + ":" + port, e);
+          return "❌ OFFLINE";
         }
 
-        // Phase 2: Protocol & Auth (L7)
+        // --- PHASE 2: L7 SOAP & AUTH CHECK (Identity) ---
         try {
+          // Minimal ONVIF command to verify credentials and service health
+          String body = "<GetDeviceInformation xmlns=\"http://www.onvif.org/ver10/device/wsdl\"/>";
+
+          // Reusing your established buildSoapEnvelope logic
+          // Ensure this method is static or called via parent if in a different context
+          String soap = buildSoapEnvelope(user, pass, body);
+
           HttpClient client = HttpClient.newBuilder()
               .connectTimeout(Duration.ofSeconds(parent.timeout))
               .build();
 
-          // Minimal ONVIF call
-          String soap = "<?xml version=\"1.0\" encoding=\"UTF-8\"?><s:Envelope xmlns:s=\"http://www.w3.org/2003/05/soap-envelope\"><s:Body><GetSystemDateAndTime xmlns=\"http://www.onvif.org/ver10/device/wsdl\"/></s:Body></s:Envelope>";
-
-          HttpRequest.Builder requestBuilder = HttpRequest.newBuilder()
+          HttpRequest request = HttpRequest.newBuilder()
               .uri(uri)
               .header("Content-Type", "application/soap+xml; charset=utf-8")
-              .POST(HttpRequest.BodyPublishers.ofString(soap));
+              .POST(HttpRequest.BodyPublishers.ofString(soap))
+              .build();
 
-          // If we have credentials, we'd ideally use Digest/WS-Security here
-          // For now, checking if 200 (Open) or 401 (Auth Required)
-          HttpResponse<String> response = client.send(requestBuilder.build(), HttpResponse.BodyHandlers.ofString());
+          HttpResponse<String> response = client.send(request, HttpResponse.BodyHandlers.ofString());
 
-          if (response.statusCode() == 200)
+          // Protocol success
+          if (response.statusCode() == 200) {
             return "✅ AUTHORIZED";
-          if (response.statusCode() == 401)
-            return "🔐 AUTH REQ"; // Alive but credentials rejected
+          }
+
+          // Protocol-level Auth rejection (401 or SOAP Fault containing "Unauthorized")
+          if (response.statusCode() == 401 || response.body().contains("Unauthorized")
+              || response.body().contains("NotAuthorized")) {
+            return "🔐 AUTH REQ";
+          }
+
+          // Other HTTP failures (500, 404, etc.)
           return "⚠️ HTTP " + response.statusCode();
 
+        } catch (java.net.http.HttpConnectTimeoutException e) {
+          parent.info(log, "L7 Protocol timeout for " + host, e);
+          return "❌ TIMEOUT";
         } catch (Exception e) {
-          parent.info(log, "L7 Probe failed", e);
-          return "❓ PROTOCOL ERR";
+          // Catch-all for parser errors, EOF, or SSL issues
+          parent.info(log, "L7 Auth check failed for " + user + "@" + host, e);
+          return "❓ ERROR";
         }
+      }
+
+      // Helper for ONVIF Password Digest
+      private String createOnvifAuthHeader(String user, String pass) {
+        if (user == null || pass == null)
+          return "";
+        String nonce = Long.toString(new Random().nextLong());
+        String created = Instant.now().toString();
+        // Simplified for logic: in real PTZ we'll use a proper SHA-1 Digest helper
+        return String.format(
+            "<Security xmlns=\"http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-secext-1.0.xsd\">" +
+                "<UsernameToken><Username>%s</Username><Password>%s</Password></UsernameToken></Security>",
+            user, pass);
       }
 
       private boolean isAlive(String url) {
@@ -292,33 +325,88 @@ public class onvif {
       log.info("Found {} devices.", discovered.size());
     }
 
-    @Command(description = "Get all available RTSP Stream URIs.")
+    @Command(name = "stream", description = "Get all available RTSP Stream URIs.")
     public void stream(@Parameters(arity = "0..1") String urlParam) {
       Target t = resolveTarget(urlParam);
       try {
         String capRes = postSoap(t.url, buildSoapEnvelope(t.user, t.pass,
             "<GetCapabilities xmlns=\"http://www.onvif.org/ver10/device/wsdl\"><Category>Media</Category></GetCapabilities>"));
-        String mediaUrl = extractTag(capRes, "tt:XAddr");
+
+        // Fallback-friendly extraction
+        String mediaUrl = extractTag(capRes, "XAddr");
+        if (mediaUrl == null)
+          mediaUrl = extractTag(capRes, "tt:XAddr");
+
         String targetUrl = (mediaUrl != null) ? mediaUrl : t.url;
 
         String profRes = postSoap(targetUrl,
             buildSoapEnvelope(t.user, t.pass, "<GetProfiles xmlns=\"http://www.onvif.org/ver10/media/wsdl\"/>"));
+
         List<OnvifProfile> profiles = parseProfiles(profRes);
 
+        if (profiles.isEmpty()) {
+          System.err.println("No media profiles found. Raw XML length: " + profRes.length());
+          // Log the first 500 chars of the response to help debug if it fails again
+          info(log, "Raw Response Preview: " + profRes.substring(0, Math.min(500, profRes.length())), null);
+          return;
+        }
+
         for (OnvifProfile profile : profiles) {
-          String streamSoap = buildSoapEnvelope(t.user, t.pass,
-              "<GetStreamUri xmlns=\"http://www.onvif.org/ver10/media/wsdl\"><StreamSetup>" +
-                  "<Stream xmlns=\"http://www.onvif.org/ver10/schema\">RTP-Unicast</Stream>" +
-                  "<Transport xmlns=\"http://www.onvif.org/ver10/schema\"><Protocol>RTSP</Protocol></Transport></StreamSetup>"
-                  +
-                  "<ProfileToken>" + profile.token + "</ProfileToken></GetStreamUri>");
-          String streamRes = postSoap(targetUrl, streamSoap);
-          System.out.printf("Profile: %-15s | Token: %-10s | Res: %-10s | URI: %s%n",
-              profile.name, profile.token, profile.resolution, extractTag(streamRes, "tt:Uri"));
+          try {
+            String streamSoap = buildSoapEnvelope(t.user, t.pass,
+                "<GetStreamUri xmlns=\"http://www.onvif.org/ver10/media/wsdl\"><StreamSetup>" +
+                    "<Stream xmlns=\"http://www.onvif.org/ver10/schema\">RTP-Unicast</Stream>" +
+                    "<Transport xmlns=\"http://www.onvif.org/ver10/schema\"><Protocol>RTSP</Protocol></Transport></StreamSetup>"
+                    +
+                    "<ProfileToken>" + profile.token + "</ProfileToken></GetStreamUri>");
+
+            String streamRes = postSoap(targetUrl, streamSoap);
+            String uri = extractTag(streamRes, "Uri");
+            if (uri == null)
+              uri = extractTag(streamRes, "tt:Uri");
+
+            if (uri != null && !uri.isBlank()) {
+              System.out.printf("Profile: %-15s | Token: %-10s | Res: %-10s | URI: %s%n",
+                  profile.name, profile.token, profile.resolution, uri);
+            }
+          } catch (Exception e) {
+            // Log failure to info without swallowing
+            info(log, "Profile " + profile.name + " (Token: " + profile.token + ") failed.", e);
+          }
         }
       } catch (Exception e) {
         throw sneakyThrow(e);
       }
+    }
+
+    private List<OnvifProfile> parseProfiles(String xml) {
+      List<OnvifProfile> list = new ArrayList<>();
+      // 1. Find all Profile blocks. We look for 'Profiles' tags regardless of
+      // namespace.
+      Pattern profileBlockPattern = Pattern.compile("<[^>]*Profiles[^>]*token=\"([^\"]+)\"[^>]*>(.*?)</[^>]*Profiles>",
+          Pattern.DOTALL);
+      Matcher m = profileBlockPattern.matcher(xml);
+
+      while (m.find()) {
+        String token = m.group(1);
+        String content = m.group(2);
+
+        // 2. Extract Name within the block
+        String name = "Unknown";
+        Matcher nameMatcher = Pattern.compile("<[^>]*Name[^>]*>([^<]+)</[^>]*Name>").matcher(content);
+        if (nameMatcher.find())
+          name = nameMatcher.group(1);
+
+        // 3. Extract Resolution within the block
+        String res = "N/A";
+        Matcher resM = Pattern.compile("<[^>]*Width[^>]*>(\\d+)</[^>]+>.*?<[^>]*Height[^>]*>(\\d+)</", Pattern.DOTALL)
+            .matcher(content);
+        if (resM.find())
+          res = resM.group(1) + "x" + resM.group(2);
+
+        list.add(new OnvifProfile(name, token, res));
+      }
+      return list;
     }
 
     @Command(description = "Dump full camera profiles as JSON.")
@@ -392,26 +480,51 @@ public class onvif {
       }
     }
 
-    private String buildSoapEnvelope(String user, String pass, String body) throws Exception {
-      String nonce = Base64.getEncoder().encodeToString(UUID.randomUUID().toString().getBytes());
-      String created = Instant.now().toString();
-      String digest = calculateDigest(nonce, created, pass);
-      return "<?xml version=\"1.0\" encoding=\"UTF-8\"?><s:Envelope xmlns:s=\"http://www.w3.org/2003/05/soap-envelope\" xmlns:tt=\"http://www.onvif.org/ver10/schema\"><s:Header><Security s:mustUnderstand=\"1\" xmlns=\"http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-secext-1.0.xsd\"><UsernameToken><Username>"
-          + user
-          + "</Username><Password Type=\"http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-username-token-profile-1.0#PasswordDigest\">"
-          + digest
-          + "</Password><Nonce EncodingType=\"http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-soap-message-security-1.0#Base64Binary\">"
-          + nonce
-          + "</Nonce><Created xmlns=\"http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-utility-1.0.xsd\">"
-          + created + "</Created></UsernameToken></Security></s:Header><s:Body>" + body + "</s:Body></s:Envelope>";
+    /**
+     * Hardened Digest Math: Explicitly handles the Base64 decoding
+     * to ensure the SHA-1 hash is calculated on raw bytes.
+     */
+    public static String calculateDigest(String nonceBase64, String created, String password) {
+      try {
+        MessageDigest md = MessageDigest.getInstance("SHA-1");
+        md.update(Base64.getDecoder().decode(nonceBase64));
+        md.update(created.getBytes(StandardCharsets.UTF_8));
+        md.update(password.getBytes(StandardCharsets.UTF_8));
+        return Base64.getEncoder().encodeToString(md.digest());
+      } catch (Exception e) {
+        throw new RuntimeException(e); // Or your sneakyThrow
+      }
     }
 
-    private String calculateDigest(String nonceB64, String created, String pass) throws Exception {
-      MessageDigest md = MessageDigest.getInstance("SHA-1");
-      md.update(Base64.getDecoder().decode(nonceB64));
-      md.update(created.getBytes(StandardCharsets.UTF_8));
-      md.update(pass.getBytes(StandardCharsets.UTF_8));
-      return Base64.getEncoder().encodeToString(md.digest());
+    /**
+     * Universal Envelope Builder: Now static so subcommands can call it directly.
+     */
+    public static String buildSoapEnvelope(String user, String pass, String body) {
+      try {
+        // Use a 16-byte random nonce as per WS-Security spec
+        byte[] nonceBytes = new byte[16];
+        new SecureRandom().nextBytes(nonceBytes);
+        String nonce = Base64.getEncoder().encodeToString(nonceBytes);
+
+        String created = Instant.now().truncatedTo(ChronoUnit.SECONDS).toString();
+        String digest = calculateDigest(nonce, created, pass);
+
+        return "<?xml version=\"1.0\" encoding=\"UTF-8\"?>" +
+            "<s:Envelope xmlns:s=\"http://www.w3.org/2003/05/soap-envelope\">" +
+            "<s:Header><Security s:mustUnderstand=\"1\" xmlns=\"http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-secext-1.0.xsd\">"
+            +
+            "<UsernameToken><Username>" + user + "</Username>" +
+            "<Password Type=\"http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-username-token-profile-1.0#PasswordDigest\">"
+            + digest + "</Password>" +
+            "<Nonce EncodingType=\"http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-soap-message-security-1.0#Base64Binary\">"
+            + nonce + "</Nonce>" +
+            "<Created xmlns=\"http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-utility-1.0.xsd\">"
+            + created + "</Created>" +
+            "</UsernameToken></Security></s:Header>" +
+            "<s:Body>" + body + "</s:Body></s:Envelope>";
+      } catch (Exception e) {
+        throw new RuntimeException(e);
+      }
     }
 
     private void sendProbes(InetAddress source, Set<String> discovered, boolean silent) {
@@ -495,29 +608,25 @@ public class onvif {
       Matcher m = Pattern.compile("<" + tag + "[^>]*>(.*?)</" + tag + ">").matcher(xml);
       return m.find() ? m.group(1) : null;
     }
-
-    private List<OnvifProfile> parseProfiles(String xml) {
-      List<OnvifProfile> list = new ArrayList<>();
-      Matcher m = Pattern.compile("token=\"([^\"]+)\".*?<tt:Name>([^<]+)", Pattern.DOTALL).matcher(xml);
-      while (m.find()) {
-        OnvifProfile p = new OnvifProfile();
-        p.token = m.group(1);
-        p.name = m.group(2);
-        Matcher resM = Pattern.compile("<tt:Width>(\\d+)</tt:Width>.*?<tt:Height>(\\d+)</tt:Height>", Pattern.DOTALL)
-            .matcher(xml.substring(m.start()));
-        p.resolution = resM.find() ? resM.group(1) + "x" + resM.group(2) : "N/A";
-        list.add(p);
-      }
-      return list;
-    }
   }
 
   static class Target {
     String url, user, pass;
   }
 
-  static class OnvifProfile {
-    String token, name, resolution;
+  public static class OnvifProfile {
+    public String name, token, resolution;
+
+    // Add this constructor to fix the compile error
+    public OnvifProfile(String name, String token, String resolution) {
+      this.name = name;
+      this.token = token;
+      this.resolution = resolution;
+    }
+
+    // Keep your default constructor if other logic (like a mapper) needs it
+    public OnvifProfile() {
+    }
   }
 
   static class DeviceProfile {
