@@ -330,7 +330,8 @@ public class onvif {
       Target t = resolveTarget(urlParam);
       try {
         String capRes = postSoap(t.url, buildSoapEnvelope(t.user, t.pass,
-            "<GetCapabilities xmlns=\"http://www.onvif.org/ver10/device/wsdl\"><Category>Media</Category></GetCapabilities>"));
+            "<GetCapabilities xmlns=\"http://www.onvif.org/ver10/device/wsdl\"><Category>Media</Category></GetCapabilities>"),
+            "GetCapabilities");
 
         // Fallback-friendly extraction
         String mediaUrl = extractTag(capRes, "XAddr");
@@ -340,7 +341,8 @@ public class onvif {
         String targetUrl = (mediaUrl != null) ? mediaUrl : t.url;
 
         String profRes = postSoap(targetUrl,
-            buildSoapEnvelope(t.user, t.pass, "<GetProfiles xmlns=\"http://www.onvif.org/ver10/media/wsdl\"/>"));
+            buildSoapEnvelope(t.user, t.pass, "<GetProfiles xmlns=\"http://www.onvif.org/ver10/media/wsdl\"/>"),
+            "GetProfiles");
 
         List<OnvifProfile> profiles = parseProfiles(profRes);
 
@@ -360,7 +362,7 @@ public class onvif {
                     +
                     "<ProfileToken>" + profile.token + "</ProfileToken></GetStreamUri>");
 
-            String streamRes = postSoap(targetUrl, streamSoap);
+            String streamRes = postSoap(targetUrl, streamSoap, "GetStreamUri");
             String uri = extractTag(streamRes, "Uri");
             if (uri == null)
               uri = extractTag(streamRes, "tt:Uri");
@@ -414,7 +416,8 @@ public class onvif {
       Target t = resolveTarget(urlParam);
       try {
         String xmlResponse = postSoap(t.url,
-            buildSoapEnvelope(t.user, t.pass, "<GetProfiles xmlns=\"http://www.onvif.org/ver10/media/wsdl\"/>"));
+            buildSoapEnvelope(t.user, t.pass, "<GetProfiles xmlns=\"http://www.onvif.org/ver10/media/wsdl\"/>"),
+            "GetProfiles");
         JsonNode profiles = new XmlMapper().readTree(xmlResponse.getBytes()).get("Body").get("GetProfilesResponse");
         System.out.println(new ObjectMapper().writerWithDefaultPrettyPrinter().writeValueAsString(profiles));
       } catch (Exception e) {
@@ -441,14 +444,14 @@ public class onvif {
       return t;
     }
 
-    private String postSoap(String url, String xml) {
-      log.debug("POST to {}: {}", url, xml);
+    private String postSoap(String url, String xml, String action) {
+      log.trace("[{}] POST {}: {}", action, url, xml);
       int attempts = 0;
       try {
         while (true) {
           try {
             attempts++;
-            log.debug("POST attempt {}/{} to {}", attempts, retries, url);
+            log.debug("[{}] POST {} attempt {}/{}", action, url, attempts, retries);
 
             HttpClient client = HttpClient.newBuilder()
                 .connectTimeout(java.time.Duration.ofSeconds(timeout))
@@ -470,8 +473,9 @@ public class onvif {
           } catch (Exception e) {
             if (attempts >= retries)
               throw sneakyThrow(e); // Last attempt failed, propagate
-            log.warn("Attempt {} failed: {}. Retrying.... Enable trace for full stacktrace.", attempts, e.getMessage());
-            log.trace("Attempt {} failed: {}. Retrying...", attempts, e);
+            log.warn("[{}] POST {} attempt {}/{} failed: {}. Retrying.... Enable trace for full stacktrace.",
+                action, url, attempts, retries, e.getMessage());
+            log.trace("[{}] POST {} attempt {}/{} failed. Retrying...", action, url, attempts, retries, e);
             Thread.sleep(500); // Small backoff
           }
         }
