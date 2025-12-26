@@ -327,9 +327,9 @@ public class onvif {
 
     @Command(name = "stream", description = "Get all available RTSP Stream URIs.")
     public void stream(@Parameters(arity = "0..1") String urlParam) {
-      Target t = resolveTarget(urlParam);
+      DeviceProfile t = resolveTarget(urlParam);
       try {
-        String capRes = postSoap(t.url, buildSoapEnvelope(t.user, t.pass,
+        String capRes = postSoap(t.alias, t.url, buildSoapEnvelope(t.user, t.pass,
             "<GetCapabilities xmlns=\"http://www.onvif.org/ver10/device/wsdl\"><Category>Media</Category></GetCapabilities>"),
             "GetCapabilities");
 
@@ -340,7 +340,7 @@ public class onvif {
 
         String targetUrl = (mediaUrl != null) ? mediaUrl : t.url;
 
-        String profRes = postSoap(targetUrl,
+        String profRes = postSoap(t.alias, targetUrl,
             buildSoapEnvelope(t.user, t.pass, "<GetProfiles xmlns=\"http://www.onvif.org/ver10/media/wsdl\"/>"),
             "GetProfiles");
 
@@ -362,7 +362,7 @@ public class onvif {
                     +
                     "<ProfileToken>" + profile.token + "</ProfileToken></GetStreamUri>");
 
-            String streamRes = postSoap(targetUrl, streamSoap, "GetStreamUri");
+            String streamRes = postSoap(t.alias, targetUrl, streamSoap, "GetStreamUri");
             String uri = extractTag(streamRes, "Uri");
             if (uri == null)
               uri = extractTag(streamRes, "tt:Uri");
@@ -413,9 +413,9 @@ public class onvif {
 
     @Command(description = "Dump full camera profiles as JSON.")
     public void dump(@Parameters(arity = "0..1") String urlParam) {
-      Target t = resolveTarget(urlParam);
+      DeviceProfile t = resolveTarget(urlParam);
       try {
-        String xmlResponse = postSoap(t.url,
+        String xmlResponse = postSoap(t.alias, t.url,
             buildSoapEnvelope(t.user, t.pass, "<GetProfiles xmlns=\"http://www.onvif.org/ver10/media/wsdl\"/>"),
             "GetProfiles");
         JsonNode profiles = new XmlMapper().readTree(xmlResponse.getBytes()).get("Body").get("GetProfilesResponse");
@@ -426,13 +426,13 @@ public class onvif {
     }
 
     // --- INTERNAL HELPERS ---
-
-    private Target resolveTarget(String positionalUrl) {
+    private DeviceProfile resolveTarget(String positionalUrl) {
       Config cfg = Config.load();
       String targetName = (deviceAlias != null) ? deviceAlias : cfg.activeDevice;
       DeviceProfile profile = cfg.devices.getOrDefault(targetName, new DeviceProfile());
 
-      Target t = new Target();
+      DeviceProfile t = new DeviceProfile();
+      t.alias = (targetName != null && !targetName.isBlank()) ? targetName : "direct";
       t.url = (positionalUrl != null) ? positionalUrl : profile.url;
       t.user = (user != null) ? user : profile.user;
       t.pass = (pass != null) ? pass : profile.pass;
@@ -444,14 +444,14 @@ public class onvif {
       return t;
     }
 
-    private String postSoap(String url, String xml, String action) {
-      log.trace("[{}] POST {}: {}", action, url, xml);
+    private String postSoap(String deviceId, String url, String xml, String action) {
+      log.trace("[{}] [{}] POST {}: {}", deviceId, action, url, xml);
       int attempts = 0;
       try {
         while (true) {
           try {
             attempts++;
-            log.debug("[{}] POST {} attempt {}/{}", action, url, attempts, retries);
+            log.debug("[{}] [{}] POST {} attempt {}/{}", deviceId, action, url, attempts, retries);
 
             HttpClient client = HttpClient.newBuilder()
                 .connectTimeout(java.time.Duration.ofSeconds(timeout))
@@ -473,9 +473,10 @@ public class onvif {
           } catch (Exception e) {
             if (attempts >= retries)
               throw sneakyThrow(e); // Last attempt failed, propagate
-            log.warn("[{}] POST {} attempt {}/{} failed: {}. Retrying.... Enable trace for full stacktrace.",
-                action, url, attempts, retries, e.getMessage());
-            log.trace("[{}] POST {} attempt {}/{} failed. Retrying...", action, url, attempts, retries, e);
+            log.warn("[{}] [{}] POST {} attempt {}/{} failed: {}. Retrying.... Enable trace for full stacktrace.",
+                deviceId, action, url, attempts, retries, e.getMessage());
+            log.trace("[{}] [{}] POST {} attempt {}/{} failed. Retrying...", deviceId, action, url, attempts, retries,
+                e);
             Thread.sleep(500); // Small backoff
           }
         }
@@ -614,10 +615,6 @@ public class onvif {
     }
   }
 
-  static class Target {
-    String url, user, pass;
-  }
-
   public static class OnvifProfile {
     public String name, token, resolution;
 
@@ -634,7 +631,7 @@ public class onvif {
   }
 
   static class DeviceProfile {
-    public String url, user, pass;
+    public String alias, url, user, pass;
 
     public DeviceProfile() {
     }
