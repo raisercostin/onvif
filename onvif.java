@@ -100,12 +100,10 @@ public class onvif {
 
       @Command(name = "register", description = "Scan and auto-register new devices.")
       public void register() {
-        Set<String> discovered = Collections.synchronizedSet(new HashSet<>());
-        parent.runDiscovery(discovered, true);
+        Config cfg = Config.load();
+        Set<String> discovered = parent.runDiscovery(true);
         if (discovered.isEmpty())
           return;
-
-        Config cfg = Config.load();
         Console console = System.console();
 
         // Interactive TTY fallback for bulk registration
@@ -159,12 +157,13 @@ public class onvif {
               "--unregistered" }, description = "Show only discovered but not saved") boolean unregistered,
           @Option(names = { "--check", "-c" }, description = "Perform liveness ping") boolean check) {
         Config cfg = Config.load();
-        Set<String> onNetwork = new HashSet<>();
+        Set<String> initial = new HashSet<>();
 
         if (all || unregistered) {
           log.info("Scanning network...");
-          parent.runDiscovery(onNetwork, true);
+          initial = parent.runDiscovery(true);
         }
+        Set<String> onNetwork = initial;
 
         // Header - Hidden if --quiet is used
         if (!parent.isQuiet()) {
@@ -298,14 +297,24 @@ public class onvif {
     }
 
     // --- CORE COMMANDS ---
-
     @Command(description = "Discover ONVIF devices.")
     public void discover() {
-      Set<String> discovered = Collections.synchronizedSet(new HashSet<>());
-      runDiscovery(discovered, false);
+      runDiscovery(false);
     }
 
-    public void runDiscovery(Set<String> discovered, boolean silent) {
+    public Set<String> runDiscovery(boolean silent) {
+      Config cfg = Config.load();
+      Set<String> knownUrls = cfg.devices.values().stream()
+          .map(p -> p.url)
+          .filter(Objects::nonNull)
+          .collect(Collectors.toSet());
+      Set<String> initial = Collections.synchronizedSet(new HashSet<>(knownUrls));
+      Set<String> discovered = Collections.synchronizedSet(new HashSet<>());
+      Set<String> discoveredNew = Collections.synchronizedSet(new HashSet<>());
+      // List<String> newUrls = discovered.stream()
+      // .filter(url -> !knownUrls.contains(url))
+      // .collect(Collectors.toList());
+
       if (!silent)
         log.info("Starting discovery...");
       List<InetAddress> interfaces = getActiveIPv4Interfaces();
@@ -313,13 +322,15 @@ public class onvif {
       try {
         List<CompletableFuture<Void>> futures = interfaces.stream()
             .map(addr -> CompletableFuture.runAsync(() -> {
-              sendProbes(addr, discovered, silent);
+              sendProbes(addr, initial, discovered, discoveredNew, silent);
             }, executor)).collect(Collectors.toList());
         CompletableFuture.allOf(futures.toArray(new CompletableFuture[0])).join();
       } finally {
         executor.shutdown();
       }
-      log.info("Found {} devices.", discovered.size());
+      log.info("Found {} new devices, confirmed {} devices, configured {} devices.", discoveredNew.size(),
+          discovered.size(), initial.size());
+      return discoveredNew;
     }
 
     @Command(name = "stream", description = "Get all available RTSP Stream URIs.")
@@ -538,7 +549,8 @@ public class onvif {
       }
     }
 
-    private void sendProbes(InetAddress source, Set<String> discovered, boolean silent) {
+    private void sendProbes(InetAddress source, Set<String> initial, Set<String> discovered, Set<String> discoveredNew,
+        boolean silent) {
       int windowMillis = (timeout * 1000) / retries;
 
       try (DatagramSocket socket = new DatagramSocket(new InetSocketAddress(source, 0))) {
@@ -550,6 +562,7 @@ public class onvif {
             InetAddress.getByName("239.255.255.250"), 3702);
 
         for (int i = 0; i < retries; i++) {
+          log.debug("Sending probe from {} (attempt {}/{})", source.getHostAddress(), i + 1, retries);
           socket.send(packet);
           long windowEnd = System.currentTimeMillis() + windowMillis;
 
@@ -562,12 +575,20 @@ public class onvif {
               String xml = new String(reply.getData(), 0, reply.getLength(), StandardCharsets.UTF_8);
               String url = extractUrl(xml);
 
-              if (url != null && discovered.add(url)) {
-                if (!silent)
-                  System.out.println(url);
+              if (url != null)
+                if (!discovered.add(url))
+                  log.debug("Duplicate device ignored: {}", url);
+                else if (initial.contains(url))
+                  log.info("Found configured device: {}", url);
+                else if (discoveredNew.add(url))
+                  if (!silent)
+                    System.out.println(url);
+                  else
+                    log.info("Found device: {}", url);
                 else
-                  log.info("Found device: {}", url);
-              }
+                  log.debug("Duplicate new device ignored: {}", url);
+              else
+                log.info("Received reply without URL: {}", xml);
             } catch (SocketTimeoutException e) {
               // EXPECTED FLOW: Discovery window closed or no more devices found.
               // We log the fact that we handled this for transparency.
