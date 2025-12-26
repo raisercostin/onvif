@@ -18,6 +18,7 @@ import picocli.CommandLine.Help.Visibility;
 import picocli.CommandLine.Option;
 import picocli.CommandLine.ScopeType;
 import picocli.CommandLine.TraceLevel;
+import java.util.concurrent.Callable;
 
 /**
  * A utility class to configure Logback logging based on verbosity levels(0-5).
@@ -120,10 +121,28 @@ public class RichLogback {
     }
   }
 
-  public static void configureLogbackByVerbosity(String... args) {
+  public static BaseOptions configureLogbackByVerbosity(String... args) {
     BaseOptions args2 = (BaseOptions) new CommandLine(new BaseOptions()).setUnmatchedArgumentsAllowed(true)
         .setCaseInsensitiveEnumValuesAllowed(true).setUsageHelpWidth(100).parseArgs(args).commandSpec().userObject();
     configureLogbackByVerbosity(null, args2.verbosity.length, args2.quiet.length, args2.color, args2.debug);
+    return args2;
+  }
+
+  public static void main(String[] args, Object command) {
+    BaseOptions opts = configureLogbackByVerbosity(args);
+    CommandLine cmd = new CommandLine(command);
+    cmd.setExecutionExceptionHandler((ex, commandLine, parseResult) -> {
+      if (opts.trace) {
+        log.warn("Execution failed:", ex);
+      } else {
+        log.warn("{} (Use --trace for full stack trace)", ex.getMessage());
+      }
+      return commandLine.getCommandSpec().exitCodeOnExecutionException();
+    });
+    int res = cmd.execute(args);
+    if (res != 0) {
+      System.exit(res);
+    }
   }
 
   public static void configureLogbackByVerbosity(String categories, int verbosity, int quiet, boolean color,

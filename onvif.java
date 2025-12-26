@@ -38,9 +38,7 @@ public class onvif {
   private static final Path CONFIG_PATH = Paths.get(System.getProperty("user.home"), ".onvif", "config.yaml");
 
   public static void main(String[] args) {
-    RichLogback.configureLogbackByVerbosity(args);
-    int exitCode = new CommandLine(new MainCommand()).execute(args);
-    System.exit(exitCode);
+    RichLogback.main(args, new MainCommand());
   }
 
   @SuppressWarnings("unchecked")
@@ -52,7 +50,7 @@ public class onvif {
       MainCommand.DeviceCmd.class,
       CommandLine.HelpCommand.class
   })
-  public static class MainCommand extends RichLogback.BaseOptions implements Runnable {
+  public static class MainCommand extends RichLogback.BaseOptions {
     @Option(names = { "-t",
         "--timeout" }, defaultValue = "5", description = "Network timeout in seconds (default: 5).", scope = ScopeType.INHERIT)
     int timeout;
@@ -73,10 +71,10 @@ public class onvif {
     @Spec
     Model.CommandSpec spec;
 
-    @Override
-    public void run() {
-      discover();
-    }
+    // @Override
+    // public void run() {
+    // discover();
+    // }
 
     // --- DEVICE MANAGEMENT MODULE ---
     @Command(name = "device", description = "Manage ONVIF device inventory.")
@@ -305,7 +303,6 @@ public class onvif {
     public void discover() {
       Set<String> discovered = Collections.synchronizedSet(new HashSet<>());
       runDiscovery(discovered, false);
-      log.info("Found {} devices.", discovered.size());
     }
 
     public void runDiscovery(Set<String> discovered, boolean silent) {
@@ -352,7 +349,7 @@ public class onvif {
           info(log, "Raw Response Preview: " + profRes.substring(0, Math.min(500, profRes.length())), null);
           return;
         }
-
+        log.info("Found {} profiles.", profiles.size());
         for (OnvifProfile profile : profiles) {
           try {
             String streamSoap = buildSoapEnvelope(t.user, t.pass,
@@ -370,6 +367,8 @@ public class onvif {
             if (uri != null && !uri.isBlank()) {
               System.out.printf("Profile: %-15s | Token: %-10s | Res: %-10s | URI: %s%n",
                   profile.name, profile.token, profile.resolution, uri);
+            } else {
+              info(log, "Profile " + profile.name + " (Token: " + profile.token + ") returned empty URI.", null);
             }
           } catch (Exception e) {
             // Log failure to info without swallowing
@@ -429,10 +428,16 @@ public class onvif {
     private DeviceProfile resolveTarget(String positionalUrl) {
       Config cfg = Config.load();
       String targetName = (deviceAlias != null) ? deviceAlias : cfg.activeDevice;
-      DeviceProfile profile = cfg.devices.getOrDefault(targetName, new DeviceProfile());
+      boolean hasAlias = targetName != null && !targetName.isBlank();
 
+      if (hasAlias && !cfg.devices.containsKey(targetName))
+        throw new RuntimeException("Unknown alias: " + targetName + ". Run 'device list' or 'device register'.");
+      if (!hasAlias && positionalUrl == null)
+        throw new RuntimeException("No device selected. Run 'device use <alias>' or pass URL.");
+
+      DeviceProfile profile = hasAlias ? cfg.devices.get(targetName) : new DeviceProfile();
       DeviceProfile t = new DeviceProfile();
-      t.alias = (targetName != null && !targetName.isBlank()) ? targetName : "direct";
+      t.alias = hasAlias ? targetName : "direct";
       t.url = (positionalUrl != null) ? positionalUrl : profile.url;
       t.user = (user != null) ? user : profile.user;
       t.pass = (pass != null) ? pass : profile.pass;
@@ -444,14 +449,14 @@ public class onvif {
       return t;
     }
 
-    private String postSoap(String deviceId, String url, String xml, String action) {
-      log.trace("[{}] [{}] POST {}: {}", deviceId, action, url, xml);
+    private String postSoap(String deviceAlias, String url, String xml, String action) {
+      log.trace("[{}] [{}] POST {}: {}", deviceAlias, action, url, xml);
       int attempts = 0;
       try {
         while (true) {
           try {
             attempts++;
-            log.debug("[{}] [{}] POST {} attempt {}/{}", deviceId, action, url, attempts, retries);
+            log.debug("[{}] [{}] POST {} attempt {}/{}", deviceAlias, action, url, attempts, retries);
 
             HttpClient client = HttpClient.newBuilder()
                 .connectTimeout(java.time.Duration.ofSeconds(timeout))
@@ -474,8 +479,9 @@ public class onvif {
             if (attempts >= retries)
               throw sneakyThrow(e); // Last attempt failed, propagate
             log.warn("[{}] [{}] POST {} attempt {}/{} failed: {}. Retrying.... Enable trace for full stacktrace.",
-                deviceId, action, url, attempts, retries, e.getMessage());
-            log.trace("[{}] [{}] POST {} attempt {}/{} failed. Retrying...", deviceId, action, url, attempts, retries,
+                deviceAlias, action, url, attempts, retries, e.getMessage());
+            log.trace("[{}] [{}] POST {} attempt {}/{} failed. Retrying...", deviceAlias, action, url, attempts,
+                retries,
                 e);
             Thread.sleep(500); // Small backoff
           }
