@@ -4,45 +4,70 @@ A professional, hardened command-line utility for discovering and managing ONVIF
 
 ## Usage
 
+
+
 ### Installation & Execution
 
-You can run or install ONVIF CLI using [JBang](https://www.jbang.dev/) without needing to manually manage a Java project or dependencies.
+1. install jbang - https://www.jbang.dev/documentation/jbang/latest/installation.html#build-tools (on windows: `scoop install https://github.com/jbangdev/scoop-bucket/blob/main/bucket/jbang.json`)
+2. run without install `
+jbang https://raw.githubusercontent.com/raisercostin/onvif/onvif.java discover`
+3. install `jbang app install --name onvif https://raw.githubusercontent.com/raisercostin/onvif/onvif.java`
+ and then run
+ `onvif discover`
 
-**1. Direct Execution (Remote)**
-Run the script directly from GitHub without downloading it:
+
+### List & Discover ONVIF devices/cams
+
+List all devices (registred and discovered) and check also availability and status.
 
 ```bash
-jbang https://raw.githubusercontent.com/raisercostin/onvif/onvif.java discover
+λ onvif.java device list --all --check
+Scanning network...
+Found configured device: http://192.168.1.247:80/onvif/device_service
+Found configured device: http://192.168.1.81:2020/onvif/device_service
+Found 0 new devices, confirmed 2 devices, configured 5 devices.
+   ALIAS           URL                                           USER       STATUS
+------------------------------------------------------------------------------------------
+  cam-247              http://192.168.1.247:80/onvif/device_service admin      ✅ AUTHORIZED
+* cam-21               http://192.168.1.21:2020/onvif/device_service costin     ✅ AUTHORIZED
+  cam-81               http://192.168.1.81:2020/onvif/device_service localadmin ✅ AUTHORIZED
+  cam-wrong-ip         http://192.168.1.111:2020/onvif/device_service admin      ❌ TIMEOUT. WRONG IP?
+  cam-wrong-port       http://192.168.1.81:80/onvif/device_service localadmin ❌ REFUSED. WRONG PORT?
+  cam-wrong-creds      http://192.168.1.81:2020/onvif/device_service admin      � AUTH REQ
 ```
 
-**2. Local Installation**
-Install the script as a global binary on your system:
+### Register and configure credentials
+
+Autoregister discovered devices.
 
 ```bash
-jbang app install --name onvif https://raw.githubusercontent.com/raisercostin/onvif/onvif.java
-# Now you can just use 'onvif' anywhere
-onvif discover
+λ onvif device register
+Found configured device: http://192.168.1.247:80/onvif/device_service
+Found configured device: http://192.168.1.81:2020/onvif/device_service
+Found configured device: http://192.168.1.21:2020/onvif/device_service
+Found 0 new devices, confirmed 3 devices, configured 3 devices.
 ```
 
-### Commands
-
-jbang onvif.java stream http://192.168.1.247:80/onvif/device_service -u admin -p ***
-jbang onvif.java dump http://192.168.1.247:80/onvif/device_service -u admin -p ***
-
-#### Discovery
-
-Scans the local network on all active interfaces to identify ONVIF services:
-
+Update device credentials
 ```bash
-onvif discover --timeout 5 --retries 3
+λ onvif.java device list --check
+λ onvif device update cam-81 --user localadmin --pass pass1
+λ onvif.java device list --check
 ```
 
-#### Stream URI
-
-Retrieve RTSP links for all available profiles (High/Low Res):
+### List device/cam streams
 
 ```bash
-onvif stream <SERVICE_URL> -u <user> -p <pass>
+> onvif device use cam-21
+> onvif stream
+Found 3 profiles.
+Profile: mainStream      | Token: profile_1  | Res: 1920x1080  | URI: rtsp://192.168.1.21:554/stream1
+Profile: minorStream     | Token: profile_2  | Res: 1280x720   | URI: rtsp://192.168.1.21:554/stream2
+Profile: jpegStream      | Token: profile_3  | Res: 640x360    | URI: rtsp://192.168.1.21:554/stream8
+> onvif stream -d cam-21
+...same
+> onvif stream cam-21
+...same
 ```
 
 #### JSON Dump
@@ -50,30 +75,29 @@ onvif stream <SERVICE_URL> -u <user> -p <pass>
 Export the complete camera configuration (resolution, codecs, analytics, etc.) as structured JSON:
 
 ```bash
-onvif dump <SERVICE_URL> -u <user> -p <pass> --quiet | jq .
+onvif dump <device> --quiet | jq .
 ```
 
 ### Global Options
 
 All commands inherit standard flags for execution control and logging:
 
-* `-v, --verbose`: Enables Debug logs.
-* `-vv`: Enables Trace logs.
-* `-q, --quiet`: Silent mode; suppresses info logs, outputting only raw data to STDOUT.
-* `--debug`: Displays full troubleshooting details for network handshakes.
-
----
+* `-v, --verbose`: Increase verbosity levels (more v can be given -vvv is DEBUG, -vvvv is TRACE).
+* `-q, --quiet`: Decrease verbosity levels (more q can be given -q is WARN, -qq is ERROR).
+* `-de, --debug`: Displays full logs with source, category and other details.
+* `-tr, --trace`: Show full stack traces for errors.
+* `-co, --[no-]color`: Enable colored output (default: true).
 
 ## Development
 
-### Architectural Principles
+### Requirements
 
-The script is designed following strict hardening standards for CLI utilities:
-
-* **Centralized Logging Control**: Utilizes `RichLogback` to configure the logging context in the first line of the `main` method, ensuring verbosity consistency before any subcommand executes.
-* **Sneaky Throw Pattern**: Implements `throw sneakyThrow(e)` to propagate checked exceptions without polluting method signatures with `throws` clauses. This avoids the anti-pattern of logging and throwing an exception simultaneously.
-* **Multi-Interface Discovery**: Uses `CompletableFuture` to launch UDP probes in parallel across all valid IPv4 interfaces, preventing blocks caused by inactive or virtual network adapters.
+* **Multi-Interface Discovery**: Launch UDP probes in parallel across all valid IPv4 interfaces.
 * **SOAP & WS-Security**: Communication is handled via manual XML templates to eliminate heavy dependencies, using `PasswordDigest` (Nonce + Timestamp + SHA1) for secure authentication.
+
+### TDD
+
+Run tests with `jbang onvif_test.java`
 
 ### Running locally
 
@@ -82,17 +106,3 @@ git clone https://github.com/raisercostin/onvif.git
 cd onvif
 jbang onvif.java discover
 ```
-
-### Adding New Commands
-
-To extend the utility, add a method annotated with `@Command` inside the `MainCommand` static class. It will automatically inherit `BaseOptions` and the logging context.
-
-```java
-@Command(description = "Description of the new action")
-public void myNewAction(@Parameters String param) {
-    try {
-        // Business logic here
-    } catch (Exception e) {
-        throw sneakyThrow(e);
-    }
-}

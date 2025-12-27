@@ -208,10 +208,20 @@ public class onvif {
         // We do this first to avoid the overhead of building SOAP if the wire is dead.
         try (Socket socket = new Socket()) {
           socket.connect(new InetSocketAddress(host, port), parent.timeout * 1000);
+        } catch (SocketTimeoutException e) {
+          parent.debug(log, "L4 TCP connection timed out to " + host + ":" + port, e);
+          return "❌ TIMEOUT. WRONG IP?";
+          // java.net.ConnectException: Connection refused: getsockopt
+        } catch (ConnectException e) {
+          if (e.getMessage().contains("Connection refused")) {
+            parent.debug(log, "L4 TCP connection refused to " + host + ":" + port, e);
+            return "❌ REFUSED. WRONG PORT?";
+          }
+          parent.debug(log, "L4 TCP connection refused to " + host + ":" + port, e);
+          return "❌ REFUSED " + e.getMessage();
         } catch (Exception e) {
-          // Use parent.info for diagnostic transparency
-          parent.info(log, "L4 TCP connection failed to " + host + ":" + port, e);
-          return "❌ OFFLINE";
+          parent.debug(log, "L4 TCP connection failed to " + host + ":" + port, e);
+          return "❌ OFFLINE" + e.getMessage();
         }
 
         // --- PHASE 2: L7 SOAP & AUTH CHECK (Identity) ---
@@ -331,8 +341,9 @@ public class onvif {
     }
 
     @Command(name = "stream", description = "Get all available RTSP Stream URIs.")
-    public void stream(@Parameters(arity = "0..1") String urlParam) {
-      DeviceProfile t = resolveTarget(urlParam);
+    public void stream(
+        @Parameters(index = "0", arity = "0..1", description = "Device alias or URL", completionCandidates = DeviceAliasCandidates.class) String targetParam) {
+      DeviceProfile t = resolveTarget(targetParam);
       try {
         String capRes = postSoap(t.alias, t.url, buildSoapEnvelope(t.user, t.pass,
             "<GetCapabilities xmlns=\"http://www.onvif.org/ver10/device/wsdl\"><Category>Media</Category></GetCapabilities>"),
@@ -418,8 +429,9 @@ public class onvif {
     }
 
     @Command(description = "Dump full camera profiles as JSON.")
-    public void dump(@Parameters(arity = "0..1") String urlParam) {
-      DeviceProfile t = resolveTarget(urlParam);
+    public void dump(
+        @Parameters(index = "0", arity = "0..1", description = "Device alias or URL", completionCandidates = DeviceAliasCandidates.class) String targetParam) {
+      DeviceProfile t = resolveTarget(targetParam);
       try {
         String xmlResponse = postSoap(t.alias, t.url,
             buildSoapEnvelope(t.user, t.pass, "<GetProfiles xmlns=\"http://www.onvif.org/ver10/media/wsdl\"/>"),
@@ -432,13 +444,27 @@ public class onvif {
     }
 
     // --- INTERNAL HELPERS ---
-    private DeviceProfile resolveTarget(String positionalUrl) {
-      String targetName = (device != null) ? device : cfg.activeDevice;
+    private DeviceProfile resolveTarget(String positionalValue) {
+      String positionalAlias = (positionalValue != null && cfg.devices.containsKey(positionalValue))
+          ? positionalValue
+          : null;
+      String positionalUrl = null;
+      if (positionalValue != null && positionalAlias == null) {
+        try {
+          URI uri = URI.create(positionalValue);
+          if (uri.getScheme() == null || uri.getHost() == null)
+            throw new IllegalArgumentException("Missing scheme or host");
+          positionalUrl = positionalValue;
+        } catch (IllegalArgumentException e) {
+          throw new RuntimeException("Unknown device alias or invalid URL: " + positionalValue);
+        }
+      }
+      String targetName = (device != null) ? device : (positionalAlias != null ? positionalAlias : cfg.activeDevice);
       boolean hasAlias = targetName != null && !targetName.isBlank();
 
       if (hasAlias && !cfg.devices.containsKey(targetName))
         throw new RuntimeException("Unknown alias: " + targetName + ". Run 'device list' or 'device register'.");
-      if (!hasAlias && positionalUrl == null)
+      if (!hasAlias && positionalValue == null)
         throw new RuntimeException("No device selected. Run 'device use <alias>' or pass URL.");
 
       DeviceProfile profile = hasAlias ? cfg.devices.get(targetName) : new DeviceProfile();
