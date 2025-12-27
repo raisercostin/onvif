@@ -19,6 +19,7 @@ import picocli.CommandLine.Option;
 import picocli.CommandLine.ScopeType;
 import picocli.CommandLine.TraceLevel;
 import java.util.concurrent.Callable;
+import java.util.function.Supplier;
 
 /**
  * A utility class to configure Logback logging based on verbosity levels(0-5).
@@ -128,9 +129,9 @@ public class RichLogback {
     return args2;
   }
 
-  public static void main(String[] args, Object command) {
+  public static void main(String[] args, Supplier<Object> command) {
     BaseOptions opts = configureLogbackByVerbosity(args);
-    CommandLine cmd = new CommandLine(command);
+    CommandLine cmd = new CommandLine(command.get());
     cmd.setExecutionExceptionHandler((ex, commandLine, parseResult) -> {
       if (opts.trace) {
         log.warn("Execution failed:", ex);

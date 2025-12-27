@@ -38,7 +38,7 @@ public class onvif {
   private static final Path CONFIG_PATH = Paths.get(System.getProperty("user.home"), ".onvif", "config.yaml");
 
   public static void main(String[] args) {
-    RichLogback.main(args, new MainCommand());
+    RichLogback.main(args, () -> new MainCommand());
   }
 
   @SuppressWarnings("unchecked")
@@ -51,6 +51,8 @@ public class onvif {
       CommandLine.HelpCommand.class
   })
   public static class MainCommand extends RichLogback.BaseOptions {
+    final Config cfg = Config.load();
+
     @Option(names = { "-t",
         "--timeout" }, defaultValue = "5", description = "Network timeout in seconds (default: 5).", scope = ScopeType.INHERIT)
     int timeout;
@@ -59,8 +61,9 @@ public class onvif {
         "--retries" }, defaultValue = "3", description = "Number of UDP probe attempts per interface (default: 3).", scope = ScopeType.INHERIT)
     int retries;
 
-    @Option(names = { "-d", "--device" }, description = "Target device alias", scope = ScopeType.INHERIT)
-    String deviceAlias;
+    @Option(names = { "-d",
+        "--device" }, description = "Target device alias. Candidates: ${COMPLETION-CANDIDATES}", scope = ScopeType.INHERIT, completionCandidates = DeviceAliasCandidates.class)
+    String device;
 
     @Option(names = { "-u", "--user" }, description = "Override username", scope = ScopeType.INHERIT)
     String user;
@@ -71,10 +74,9 @@ public class onvif {
     @Spec
     Model.CommandSpec spec;
 
-    // @Override
-    // public void run() {
-    // discover();
-    // }
+    public MainCommand() {
+      DeviceAliasCandidates.setConfig(cfg);
+    }
 
     // --- DEVICE MANAGEMENT MODULE ---
     @Command(name = "device", description = "Manage ONVIF device inventory.")
@@ -85,22 +87,20 @@ public class onvif {
 
       @Command(description = "Manually add a device profile.")
       public void add(
-          @Parameters(index = "0", description = "Device alias") String name,
+          @Parameters(index = "0", description = "Device alias", completionCandidates = DeviceAliasCandidates.class) String name,
           @Option(names = "--url", required = true, description = "Service URL") String url) {
         // Logic: CLI flags take priority for registration credentials
         if (parent.user == null || parent.pass == null) {
           throw new RuntimeException(
               "Provide credentials: onvif -u <user> -p <pass> device add " + name + " --url <url>");
         }
-        Config cfg = Config.load();
-        cfg.devices.put(name, new DeviceProfile(url, parent.user, parent.pass));
-        cfg.save();
+        parent.cfg.devices.put(name, new DeviceProfile(url, parent.user, parent.pass));
+        parent.cfg.save();
         System.out.println("Device '" + name + "' added manually.");
       }
 
       @Command(name = "register", description = "Scan and auto-register new devices.")
       public void register() {
-        Config cfg = Config.load();
         Set<String> discovered = parent.runDiscovery(true);
         if (discovered.isEmpty())
           return;
@@ -119,23 +119,22 @@ public class onvif {
 
         for (String url : discovered) {
           String alias = generateAlias(url);
-          if (!cfg.devices.containsKey(alias)) {
-            cfg.devices.put(alias, new DeviceProfile(url,
+          if (!parent.cfg.devices.containsKey(alias)) {
+            parent.cfg.devices.put(alias, new DeviceProfile(url,
                 parent.user != null ? parent.user : "admin",
                 parent.pass != null ? parent.pass : "admin"));
             System.out.printf("Registered: %-12s -> %s%n", alias, url);
           }
         }
-        cfg.save();
+        parent.cfg.save();
       }
 
       @Command(description = "Update credentials or URL for an existing device.")
       public void update(
-          @Parameters(description = "Device alias") String name,
+          @Parameters(description = "Device alias", completionCandidates = DeviceAliasCandidates.class) String name,
           @Option(names = "--url", description = "New service URL") String url // Added this
       ) {
-        Config cfg = Config.load();
-        DeviceProfile p = cfg.devices.get(name);
+        DeviceProfile p = parent.cfg.devices.get(name);
         if (p == null)
           throw new RuntimeException("Device '" + name + "' not found.");
 
@@ -146,7 +145,7 @@ public class onvif {
         if (parent.pass != null)
           p.pass = parent.pass;
 
-        cfg.save();
+        parent.cfg.save();
         System.out.println("Device '" + name + "' updated.");
       }
 
@@ -156,7 +155,6 @@ public class onvif {
           @Option(names = {
               "--unregistered" }, description = "Show only discovered but not saved") boolean unregistered,
           @Option(names = { "--check", "-c" }, description = "Perform liveness ping") boolean check) {
-        Config cfg = Config.load();
         Set<String> initial = new HashSet<>();
 
         if (all || unregistered) {
@@ -173,8 +171,8 @@ public class onvif {
 
         // 1. Process Registered Devices
         if (!unregistered) {
-          cfg.devices.forEach((id, p) -> {
-            String marker = id.equals(cfg.activeDevice) ? "*" : " ";
+          parent.cfg.devices.forEach((id, p) -> {
+            String marker = id.equals(parent.cfg.activeDevice) ? "*" : " ";
             String status = check ? checkStatus(p.url, p.user, p.pass) : "NOT CHECKED";
             System.out.printf("%s %-20s %-40s %-10s %-15s%n",
                 marker, id, p.url, p.user, status);
@@ -191,12 +189,12 @@ public class onvif {
       }
 
       @Command(description = "Select the default device.")
-      public void use(@Parameters String name) {
-        Config cfg = Config.load();
-        if (!cfg.devices.containsKey(name))
+      public void use(
+          @Parameters(index = "0", description = "Device alias", paramLabel = "device", completionCandidates = DeviceAliasCandidates.class) String name) {
+        if (!parent.cfg.devices.containsKey(name))
           throw new RuntimeException("Unknown alias: " + name);
-        cfg.activeDevice = name;
-        cfg.save();
+        parent.cfg.activeDevice = name;
+        parent.cfg.save();
         System.out.println("Active device: " + name);
       }
 
@@ -303,7 +301,6 @@ public class onvif {
     }
 
     public Set<String> runDiscovery(boolean silent) {
-      Config cfg = Config.load();
       Set<String> knownUrls = cfg.devices.values().stream()
           .map(p -> p.url)
           .filter(Objects::nonNull)
@@ -398,7 +395,6 @@ public class onvif {
       Pattern profileBlockPattern = Pattern.compile("<[^>]*Profiles[^>]*token=\"([^\"]+)\"[^>]*>(.*?)</[^>]*Profiles>",
           Pattern.DOTALL);
       Matcher m = profileBlockPattern.matcher(xml);
-
       while (m.find()) {
         String token = m.group(1);
         String content = m.group(2);
@@ -437,8 +433,7 @@ public class onvif {
 
     // --- INTERNAL HELPERS ---
     private DeviceProfile resolveTarget(String positionalUrl) {
-      Config cfg = Config.load();
-      String targetName = (deviceAlias != null) ? deviceAlias : cfg.activeDevice;
+      String targetName = (device != null) ? device : cfg.activeDevice;
       boolean hasAlias = targetName != null && !targetName.isBlank();
 
       if (hasAlias && !cfg.devices.containsKey(targetName))
@@ -697,6 +692,31 @@ public class onvif {
       } catch (Exception e) {
         throw sneakyThrow(e);
       }
+    }
+  }
+
+  static class DeviceAliasCandidates implements Iterable<String> {
+    private static volatile Config cachedConfig;
+
+    @Spec
+    Model.CommandSpec spec;
+
+    static void setConfig(Config cfg) {
+      cachedConfig = cfg;
+    }
+
+    @Override
+    public Iterator<String> iterator() {
+      if (spec != null) {
+        Object root = spec.commandLine().getCommandSpec().root().userObject();
+        if (root instanceof MainCommand) {
+          return ((MainCommand) root).cfg.devices.keySet().iterator();
+        }
+      }
+      if (cachedConfig != null) {
+        return cachedConfig.devices.keySet().iterator();
+      }
+      return Collections.emptyIterator();
     }
   }
 }
