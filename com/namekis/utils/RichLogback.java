@@ -19,6 +19,7 @@ import picocli.CommandLine.Option;
 import picocli.CommandLine.ScopeType;
 import picocli.CommandLine.TraceLevel;
 import java.util.concurrent.Callable;
+import java.util.function.Consumer;
 import java.util.function.Supplier;
 
 /**
@@ -52,7 +53,7 @@ public class RichLogback {
   private static final int LEVEL2_INFO = 2;
   private static final int LEVEL1_NORMAL_DETAILED = 1;
   private static final int LEVEL0_NORMAL = 0; // nothing from logs
-  private static final Logger log = LoggerFactory.getLogger(RichLogback.class);
+  private static final java.util.logging.Logger log = LoggerFactory.getLogger(RichLogback.class);
 
   public static class BaseOptions {
     @Option(names = { "-q",
@@ -127,6 +128,54 @@ public class RichLogback {
         .setCaseInsensitiveEnumValuesAllowed(true).setUsageHelpWidth(100).parseArgs(args).commandSpec().userObject();
     configureLogbackByVerbosity(null, args2.verbosity.length, args2.quiet.length, args2.color, args2.debug);
     return args2;
+  }
+
+  public static void main(String[] args, Runnable command) {
+    BaseOptions opts = configureLogbackByVerbosity(args);
+    try {
+      command.run();
+    } catch (Exception ex) {
+      if (opts.trace) {
+        log.warn("Execution failed:", ex);
+      } else {
+        log.warn("{} (Use --trace for full stack trace)", ex.getMessage());
+      }
+      System.exit(1);
+    }
+  }
+
+  /**
+   * Execute a subcommand with arguments after a `---`.
+   */
+  public static void main(String[] args, Consumer<String[]> command) {
+    log.debug("Execute the command. Arguments after `--` are passed through.");
+    java.util.List<String> logArgs = new java.util.ArrayList<>();
+    java.util.List<String> passthrough = new java.util.ArrayList<>();
+    boolean separator = false;
+    for (String arg : args) {
+      if (!separator && "--".equals(arg)) {
+        separator = true;
+        continue;
+      }
+      if (separator) {
+        passthrough.add(arg);
+      } else {
+        logArgs.add(arg);
+      }
+    }
+
+    BaseOptions opts = configureLogbackByVerbosity(logArgs.toArray(new String[0]));
+    try {
+      log.debug("Executing command with arguments: [{}]", String.join(" ", passthrough));
+      command.accept(passthrough.toArray(new String[0]));
+    } catch (Exception ex) {
+      if (opts.trace) {
+        log.warn("Execution failed:", ex);
+      } else {
+        log.warn("{} (Use --trace for full stack trace)", ex.getMessage());
+      }
+      System.exit(1);
+    }
   }
 
   public static void main(String[] args, Supplier<Object> command) {

@@ -99,6 +99,40 @@ All commands inherit standard flags for execution control and logging:
 
 Run tests with `jbang onvif_test.java`
 
+```bash
+λ jbang onvif_test.java
+Executing command with arguments:
+Found 3 profiles.
+Profile: mainStream      | Token: profile_1  | Res: 1920x1080  | URI: rtsp://192.168.1.21:554/stream1
+Profile: minorStream     | Token: profile_2  | Res: 1280x720   | URI: rtsp://192.168.1.21:554/stream2
+Profile: jpegStream      | Token: profile_3  | Res: 640x360    | URI: rtsp://192.168.1.21:554/stream8
+
+╷
+└─ JUnit Jupiter ✔
+   ├─ onvif_test$CommandTests ✔
+   │  ├─ streamByDeviceAliasPrintsProfiles() ✔
+   │  ├─ deviceUseSetsActiveAlias() ✔
+   │  ├─ deviceListShowsHeader() ✔
+   │  └─ dumpByDeviceAliasPrintsProfiles() ✔
+   └─ onvif_test$SoapEnvelopeTests ✔
+      ├─ calculateDigestUsesDecodedNonce() ✔
+      └─ buildSoapEnvelopeContainsBodyAndUsername() ✔
+
+Test run finished after 2244 ms
+[         3 containers found      ]
+[         0 containers skipped    ]
+[         3 containers started    ]
+[         0 containers aborted    ]
+[         3 containers successful ]
+[         0 containers failed     ]
+[         6 tests found           ]
+[         0 tests skipped         ]
+[         6 tests started         ]
+[         0 tests aborted         ]
+[         6 tests successful      ]
+[         0 tests failed          ]
+```
+
 ### Running locally
 
 ```bash

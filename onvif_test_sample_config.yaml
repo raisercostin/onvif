@@ -1,0 +1,33 @@
+---
+activeDevice: "cam-21"
+devices:
+  cam-247:
+    alias: null
+    url: "http://192.168.1.247:80/onvif/device_service"
+    user: "admin"
+    pass: ""
+  cam-21:
+    alias: null
+    url: "http://192.168.1.21:2020/onvif/device_service"
+    user: "costin"
+    pass: ""
+  cam-81:
+    alias: null
+    url: "http://192.168.1.81:2020/onvif/device_service"
+    user: "localadmin"
+    pass: ""
+  cam-wrong-ip:
+    alias: null
+    url: "http://192.168.1.111:2020/onvif/device_service"
+    user: "admin"
+    pass: ""
+  cam-wrong-port:
+    alias: null
+    url: "http://192.168.1.81:80/onvif/device_service"
+    user: "localadmin"
+    pass: ""
+  cam-wrong-creds:
+    alias: null
+    url: "http://192.168.1.81:2020/onvif/device_service"
+    user: "admin"
+    pass: ""
