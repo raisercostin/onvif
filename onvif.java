@@ -13,6 +13,9 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import com.namekis.utils.RichCli;
 import com.fasterxml.jackson.databind.*;
+import com.fasterxml.jackson.databind.node.ArrayNode;
+import com.fasterxml.jackson.databind.node.NullNode;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.fasterxml.jackson.dataformat.xml.XmlMapper;
 import com.fasterxml.jackson.dataformat.yaml.YAMLMapper;
 
@@ -36,6 +39,12 @@ import java.util.stream.Collectors;
 public class onvif {
   private static final Logger log = LoggerFactory.getLogger("onvif");
   private static final Path CONFIG_PATH = Paths.get(System.getProperty("user.home"), ".onvif", "config.yaml");
+  private static final ObjectMapper JSON_MAPPER = new ObjectMapper()
+      .configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false);
+  private static final XmlMapper XML_MAPPER = new XmlMapper();
+  static {
+    XML_MAPPER.configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false);
+  }
 
   public static void main(String[] args) {
     RichCli.main(args, () -> new MainCommand());
@@ -165,7 +174,7 @@ public class onvif {
 
         // Header - Hidden if --quiet is used
         if (!parent.isQuiet()) {
-          System.out.printf("%-2s %-15s %-45s %-10s %-10s%n", "", "ALIAS", "URL", "USER", check ? "STATUS" : "");
+          System.out.printf("%-2s %-15s %-45s %-10s %-30s%n", "", "ALIAS", "URL", "USER", check ? "STATUS" : "");
           System.out.println("-".repeat(90));
         }
 
@@ -174,7 +183,7 @@ public class onvif {
           parent.cfg.devices.forEach((id, p) -> {
             String marker = id.equals(parent.cfg.activeDevice) ? "*" : " ";
             String status = check ? checkStatus(p.url, p.user, p.pass) : "NOT CHECKED";
-            System.out.printf("%s %-20s %-40s %-10s %-15s%n",
+            System.out.printf("%s %-20s %-40s %-10s %-30s%n",
                 marker, id, p.url, p.user, status);
             onNetwork.remove(p.url);
           });
@@ -205,15 +214,14 @@ public class onvif {
         int port = uri.getPort() != -1 ? uri.getPort() : 80;
 
         // --- PHASE 1: L4 TCP CHECK (Reachability) ---
-        // We do this first to avoid the overhead of building SOAP if the wire is dead.
+        log.trace("First test socket to avoid the overhead of building SOAP if the wire is dead.");
         try (Socket socket = new Socket()) {
           socket.connect(new InetSocketAddress(host, port), parent.timeout * 1000);
         } catch (SocketTimeoutException e) {
           parent.debug(log, "L4 TCP connection timed out to " + host + ":" + port, e);
           return "❌ TIMEOUT. WRONG IP?";
-          // java.net.ConnectException: Connection refused: getsockopt
         } catch (ConnectException e) {
-          if (e.getMessage().contains("Connection refused")) {
+          if (e.getMessage().contains("Connection refused: getsockopt")) {
             parent.debug(log, "L4 TCP connection refused to " + host + ":" + port, e);
             return "❌ REFUSED. WRONG PORT?";
           }
@@ -225,12 +233,10 @@ public class onvif {
         }
 
         // --- PHASE 2: L7 SOAP & AUTH CHECK (Identity) ---
+        StringBuilder status = new StringBuilder();
         try {
           // Minimal ONVIF command to verify credentials and service health
           String body = "<GetDeviceInformation xmlns=\"http://www.onvif.org/ver10/device/wsdl\"/>";
-
-          // Reusing your established buildSoapEnvelope logic
-          // Ensure this method is static or called via parent if in a different context
           String soap = buildSoapEnvelope(user, pass, body);
 
           HttpClient client = HttpClient.newBuilder()
@@ -245,20 +251,15 @@ public class onvif {
 
           HttpResponse<String> response = client.send(request, HttpResponse.BodyHandlers.ofString());
 
-          // Protocol success
           if (response.statusCode() == 200) {
-            return "✅ AUTHORIZED";
-          }
-
-          // Protocol-level Auth rejection (401 or SOAP Fault containing "Unauthorized")
-          if (response.statusCode() == 401 || response.body().contains("Unauthorized")
+            status.append("✅ AUTHORIZED");
+          } else if (response.statusCode() == 401 || response.body().contains("Unauthorized")
               || response.body().contains("NotAuthorized")) {
-            return "🔐 AUTH REQ";
+            // Protocol-level Auth rejection (401 or SOAP Fault containing "Unauthorized")
+            return "🔐 AUTH REQ " + response.statusCode() + " [" + response.body() + "]";
+          } else {
+            return "⚠️ HTTP " + response.statusCode() + " [" + response.body() + "]";
           }
-
-          // Other HTTP failures (500, 404, etc.)
-          return "⚠️ HTTP " + response.statusCode();
-
         } catch (java.net.http.HttpConnectTimeoutException e) {
           parent.info(log, "L7 Protocol timeout for " + host, e);
           return "❌ TIMEOUT";
@@ -267,6 +268,24 @@ public class onvif {
           parent.info(log, "L7 Auth check failed for " + user + "@" + host, e);
           return "❓ ERROR";
         }
+
+        // --- PHASE 3: EVENTING CHECK ---
+        try {
+          DeviceProfile t = new DeviceProfile(url, user, pass);
+          t.alias = "check"; // dummy alias
+          String capRes = parent.postSoap(t, t.url, buildSoapEnvelope(t.user, t.pass,
+              "<GetCapabilities xmlns=\"http://www.onvif.org/ver10/device/wsdl\"><Category>Events</Category></GetCapabilities>"),
+              "GetCapabilities");
+          SoapEnvelope capEnv = parent.xmlToEnvelope(capRes);
+          if (capEnv.getEventsXAddr() != null && !capEnv.getEventsXAddr().isBlank()) {
+            status.append(" | ✅ EVENTS");
+          } else {
+            status.append(" | ❌ EVENTS");
+          }
+        } catch (Exception e) {
+          status.append(" | ❌ EVENTS");
+        }
+        return status.toString();
       }
 
       // Helper for ONVIF Password Digest
@@ -345,7 +364,7 @@ public class onvif {
         @Parameters(index = "0", arity = "0..1", description = "Device alias or URL", completionCandidates = DeviceAliasCandidates.class) String targetParam) {
       DeviceProfile t = resolveTarget(targetParam);
       try {
-        String capRes = postSoap(t.alias, t.url, buildSoapEnvelope(t.user, t.pass,
+        String capRes = postSoap(t, t.url, buildSoapEnvelope(t.user, t.pass,
             "<GetCapabilities xmlns=\"http://www.onvif.org/ver10/device/wsdl\"><Category>Media</Category></GetCapabilities>"),
             "GetCapabilities");
 
@@ -356,7 +375,7 @@ public class onvif {
 
         String targetUrl = (mediaUrl != null) ? mediaUrl : t.url;
 
-        String profRes = postSoap(t.alias, targetUrl,
+        String profRes = postSoap(t, targetUrl,
             buildSoapEnvelope(t.user, t.pass, "<GetProfiles xmlns=\"http://www.onvif.org/ver10/media/wsdl\"/>"),
             "GetProfiles");
 
@@ -378,7 +397,7 @@ public class onvif {
                     +
                     "<ProfileToken>" + profile.token + "</ProfileToken></GetStreamUri>");
 
-            String streamRes = postSoap(t.alias, targetUrl, streamSoap, "GetStreamUri");
+            String streamRes = postSoap(t, targetUrl, streamSoap, "GetStreamUri");
             String uri = extractTag(streamRes, "Uri");
             if (uri == null)
               uri = extractTag(streamRes, "tt:Uri");
@@ -433,11 +452,85 @@ public class onvif {
         @Parameters(index = "0", arity = "0..1", description = "Device alias or URL", completionCandidates = DeviceAliasCandidates.class) String targetParam) {
       DeviceProfile t = resolveTarget(targetParam);
       try {
-        String xmlResponse = postSoap(t.alias, t.url,
+        String xmlResponse = postSoap(t, t.url,
             buildSoapEnvelope(t.user, t.pass, "<GetProfiles xmlns=\"http://www.onvif.org/ver10/media/wsdl\"/>"),
             "GetProfiles");
-        JsonNode profiles = new XmlMapper().readTree(xmlResponse.getBytes()).get("Body").get("GetProfilesResponse");
-        System.out.println(new ObjectMapper().writerWithDefaultPrettyPrinter().writeValueAsString(profiles));
+        JsonNode profiles = XML_MAPPER.readTree(xmlResponse.getBytes()).get("Body").get("GetProfilesResponse");
+        System.out.println(JSON_MAPPER.writerWithDefaultPrettyPrinter().writeValueAsString(profiles));
+      } catch (Exception e) {
+        throw sneakyThrow(e);
+      }
+    }
+
+    @Command(description = "Stream ONVIF events as JSON.")
+    public void events(
+        @Parameters(index = "0", arity = "0..1", description = "Device alias or URL", completionCandidates = DeviceAliasCandidates.class) String targetParam,
+        @Option(names = "--pull-timeout", defaultValue = "60", description = "PullMessages timeout in seconds.") int pullTimeout,
+        @Option(names = "--limit", defaultValue = "50", description = "Message limit per PullMessages call.") int messageLimit,
+        @Option(names = "--once", description = "Exit after a single PullMessages call.") boolean once) {
+      DeviceProfile t = resolveTarget(targetParam);
+      try {
+        String capRes = postSoap(t, t.url, buildSoapEnvelope(t.user, t.pass,
+            "<GetCapabilities xmlns=\"http://www.onvif.org/ver10/device/wsdl\"><Category>All</Category></GetCapabilities>"),
+            "GetCapabilities");
+        SoapEnvelope capEnv = xmlToEnvelope(capRes);
+        String eventsUrl = capEnv.getEventsXAddr();
+        if (eventsUrl == null || eventsUrl.isBlank())
+          throw new RuntimeException("No Events XAddr from GetCapabilities.");
+        if (!capEnv.isPullPointSupported())
+          throw new RuntimeException("Events PullPoint not supported by device.");
+        log.debug("Events XAddr for {}: {}", t.alias, eventsUrl);
+
+        String subRes = postSoap(t, eventsUrl, buildSoapEnvelope(t.user, t.pass,
+            "<CreatePullPointSubscription xmlns=\"http://www.onvif.org/ver10/events/wsdl\"/>"),
+            "CreatePullPointSubscription",
+            "http://www.onvif.org/ver10/events/wsdl/EventPortType/CreatePullPointSubscriptionRequest");
+        SoapEnvelope subEnv = xmlToEnvelope(subRes);
+        String subAddress = subEnv.getSubscriptionAddress();
+        if (subAddress == null || subAddress.isBlank())
+          throw new RuntimeException("Subscription reference missing Address element.");
+        log.debug("Subscription address for {}: {}", t.alias, subAddress);
+
+        while (true) {
+          String pullBody = "<PullMessages xmlns=\"http://www.onvif.org/ver10/events/wsdl\">" +
+              "<Timeout>PT" + pullTimeout + "S</Timeout>" +
+              "<MessageLimit>" + messageLimit + "</MessageLimit>" +
+              "</PullMessages>";
+          String pullRes;
+          try {
+            pullRes = postSoap(t, subAddress, buildSoapEnvelope(t.user, t.pass, pullBody),
+                "PullMessages",
+                "http://www.onvif.org/ver10/events/wsdl/PullPointSubscription/PullMessagesRequest");
+          } catch (Exception e) {
+            Throwable cause = (e instanceof RuntimeException && e.getCause() != null) ? e.getCause() : e;
+            if (cause instanceof IOException) {
+              log.info("PullMessages failed at {}. Falling back to Events XAddr. (Use --trace for full stack trace)",
+                  subAddress);
+              pullRes = postSoap(t, eventsUrl, buildSoapEnvelope(t.user, t.pass, pullBody),
+                  "PullMessages",
+                  "http://www.onvif.org/ver10/events/wsdl/PullPointSubscription/PullMessagesRequest");
+            } else {
+              throw sneakyThrow(e);
+            }
+          }
+          SoapEnvelope pullEnv = xmlToEnvelope(pullRes);
+          PullMessagesResponse response = pullEnv.getPullMessagesResponse();
+          if (response != null && response.NotificationMessage != null) {
+            for (NotificationMessage msg : normalizeMessages(response.NotificationMessage)) {
+              ObjectNode out = JSON_MAPPER.createObjectNode();
+              out.put("device", t.alias);
+              out.put("receivedAt", Instant.now().toString());
+              String topic = extractTopic(msg.Topic);
+              if (topic != null)
+                out.put("topic", topic);
+              if (msg.Message != null)
+                out.set("message", msg.Message);
+              System.out.println(JSON_MAPPER.writeValueAsString(out));
+            }
+          }
+          if (once)
+            break;
+        }
       } catch (Exception e) {
         throw sneakyThrow(e);
       }
@@ -481,39 +574,152 @@ public class onvif {
       return t;
     }
 
-    private String postSoap(String deviceAlias, String url, String xml, String action) {
-      log.trace("[{}] [{}] POST {}: {}", deviceAlias, action, url, xml);
+    private SoapEnvelope xmlToEnvelope(String xml) {
+      try {
+        JsonNode raw = XML_MAPPER.readTree(xml.getBytes());
+        JsonNode normalized = normalizeJson(raw);
+        JsonNode envelopeNode = normalized;
+        if (normalized.isObject() && normalized.has("Envelope"))
+          envelopeNode = normalized.get("Envelope");
+        return JSON_MAPPER.treeToValue(envelopeNode, SoapEnvelope.class);
+      } catch (Exception e) {
+        throw sneakyThrow(e);
+      }
+    }
+
+    private JsonNode normalizeJson(JsonNode node) {
+      if (node == null)
+        return NullNode.instance;
+      if (node.isObject()) {
+        ObjectNode out = JSON_MAPPER.createObjectNode();
+        Iterator<Map.Entry<String, JsonNode>> fields = node.fields();
+        while (fields.hasNext()) {
+          Map.Entry<String, JsonNode> entry = fields.next();
+          String key = stripPrefix(entry.getKey());
+          JsonNode value = normalizeJson(entry.getValue());
+          if (out.has(key)) {
+            JsonNode existing = out.get(key);
+            ArrayNode arr;
+            if (existing.isArray()) {
+              arr = (ArrayNode) existing;
+            } else {
+              arr = JSON_MAPPER.createArrayNode();
+              arr.add(existing);
+              out.set(key, arr);
+            }
+            if (value.isArray()) {
+              arr.addAll((ArrayNode) value);
+            } else {
+              arr.add(value);
+            }
+          } else {
+            out.set(key, value);
+          }
+        }
+        return out;
+      }
+      if (node.isArray()) {
+        ArrayNode arr = JSON_MAPPER.createArrayNode();
+        for (JsonNode item : node) {
+          arr.add(normalizeJson(item));
+        }
+        return arr;
+      }
+      return node;
+    }
+
+    private String stripPrefix(String name) {
+      int idx = name.indexOf(':');
+      return idx >= 0 ? name.substring(idx + 1) : name;
+    }
+
+    private String extractTopic(JsonNode topic) {
+      if (topic == null)
+        return null;
+      if (topic.isTextual())
+        return topic.asText();
+      JsonNode content = topic.get("content");
+      if (content != null) {
+        if (content.isTextual())
+          return content.asText();
+        if (content.isArray() && content.size() > 0 && content.get(0).isTextual())
+          return content.get(0).asText();
+      }
+      return topic.toString().replace("\"", "");
+    }
+
+    private java.util.List<NotificationMessage> normalizeMessages(JsonNode node) {
+      if (node == null || node.isNull())
+        return java.util.Collections.emptyList();
+      if (node.isArray()) {
+        java.util.List<NotificationMessage> list = new java.util.ArrayList<>();
+        for (JsonNode item : node) {
+          list.add(JSON_MAPPER.convertValue(item, NotificationMessage.class));
+        }
+        return list;
+      }
+      return java.util.Collections.singletonList(JSON_MAPPER.convertValue(node, NotificationMessage.class));
+    }
+
+    private String postSoap(DeviceProfile t, String url, String xml, String action) {
+      return postSoap(t, url, xml, action, null, null);
+    }
+
+    private String postSoap(DeviceProfile t, String url, String xml, String action, String soapAction) {
+      return postSoap(t, url, xml, action, soapAction, null);
+    }
+
+    private String postSoap(DeviceProfile t, String url, String xml, String action, String soapAction,
+        String contentTypeOverride) {
+      log.trace("[{}] [{}] POST {}: {}", t.alias, action, url, xml);
       int attempts = 0;
       try {
         while (true) {
           try {
             attempts++;
-            log.debug("[{}] [{}] POST {} attempt {}/{}", deviceAlias, action, url, attempts, retries);
+            log.debug("[{}] [{}] POST {} attempt {}/{}", t.alias, action, url, attempts, retries);
+            System.setProperty("jdk.httpclient.allowRestrictedHeaders", "Connection");
 
             HttpClient client = HttpClient.newBuilder()
                 .connectTimeout(java.time.Duration.ofSeconds(timeout))
+                .version(HttpClient.Version.HTTP_1_1)
                 .build();
-            HttpRequest request = HttpRequest.newBuilder()
+            String contentType = contentTypeOverride != null ? contentTypeOverride
+                : "application/soap+xml; charset=utf-8";
+            HttpRequest.Builder builder = HttpRequest.newBuilder()
                 .uri(URI.create(url))
-                .header("Content-Type", "application/soap+xml; charset=utf-8")
-                .POST(HttpRequest.BodyPublishers.ofString(xml))
-                .build();
+                .POST(HttpRequest.BodyPublishers.ofString(xml));
+            builder.header("User-Agent", "Mozilla/5.0 (Linux)");
+            builder.header("Connection", "keep-alive");
+            if (soapAction != null) {
+              if (contentTypeOverride == null) {
+                contentType = contentType + "; action=\"" + soapAction + "\"";
+              }
+              builder.header("SOAPAction", soapAction);
+            }
+            if (t.user != null && t.pass != null) {
+              String creds = t.user + ":" + t.pass;
+              String basic = Base64.getEncoder().encodeToString(creds.getBytes(StandardCharsets.UTF_8));
+              builder.header("Authorization", "Basic " + basic);
+            }
+            HttpRequest request = builder.header("Content-Type", contentType).build();
 
             HttpResponse<String> response = client.send(request, HttpResponse.BodyHandlers.ofString());
             if (response.statusCode() != 200) {
+              String body = response.body();
               // If it's a 401 Unauthorized, don't bother retrying
               if (response.statusCode() == 401)
-                throw new RuntimeException("Authentication failed (401)");
-              throw new RuntimeException("HTTP " + response.statusCode() + ": " + response.body());
+                throw new RuntimeException("Authentication failed (401): [" + body + "]");
+              throw new RuntimeException("HTTP " + response.statusCode() + ": [" + body + "]");
             }
+            log.trace("[{}] [{}] POST {} response: {}", t.alias, action, url, response.body());
             return response.body();
           } catch (Exception e) {
             if (attempts >= retries)
               throw sneakyThrow(e); // Last attempt failed, propagate
             log.warn("[{}] [{}] POST {} attempt {}/{} failed: {}. Retrying.... Enable trace for full stacktrace.",
-                deviceAlias, action, url, attempts, retries, e.getMessage());
-            log.trace("[{}] [{}] POST {} attempt {}/{} failed. Retrying...", deviceAlias, action, url, attempts,
-                retries,
+                t.alias, action, url, attempts, retries, e.getMessage());
+            log.trace("[{}] [{}] POST {} attempt {}/{} failed. Retrying...", t.alias, action, url, attempts, retries,
                 e);
             Thread.sleep(500); // Small backoff
           }
@@ -564,6 +770,42 @@ public class onvif {
             "<Created xmlns=\"http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-utility-1.0.xsd\">"
             + created + "</Created>" +
             "</UsernameToken></Security></s:Header>" +
+            "<s:Body>" + body + "</s:Body></s:Envelope>";
+      } catch (Exception e) {
+        throw new RuntimeException(e);
+      }
+    }
+
+    public static String buildSoapEnvelope(String user, String pass, String body, String wsaAction, String wsaTo) {
+      try {
+        // Use a 16-byte random nonce as per WS-Security spec
+        byte[] nonceBytes = new byte[16];
+        new SecureRandom().nextBytes(nonceBytes);
+        String nonce = Base64.getEncoder().encodeToString(nonceBytes);
+
+        String created = Instant.now().truncatedTo(ChronoUnit.SECONDS).toString();
+        String digest = calculateDigest(nonce, created, pass);
+        String messageId = "uuid:" + UUID.randomUUID();
+
+        return "<?xml version=\"1.0\" encoding=\"UTF-8\"?>" +
+            "<s:Envelope xmlns:s=\"http://www.w3.org/2003/05/soap-envelope\">" +
+            "<s:Header>" +
+            "<Security s:mustUnderstand=\"1\" xmlns=\"http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-secext-1.0.xsd\">"
+            +
+            "<UsernameToken><Username>" + user + "</Username>" +
+            "<Password Type=\"http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-username-token-profile-1.0#PasswordDigest\">"
+            + digest + "</Password>" +
+            "<Nonce EncodingType=\"http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-soap-message-security-1.0#Base64Binary\">"
+            + nonce + "</Nonce>" +
+            "<Created xmlns=\"http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-utility-1.0.xsd\">"
+            + created + "</Created>" +
+            "</UsernameToken></Security>" +
+            "<wsa:Action xmlns:wsa=\"http://schemas.xmlsoap.org/ws/2004/08/addressing\">" + wsaAction
+            + "</wsa:Action>" +
+            "<wsa:MessageID xmlns:wsa=\"http://schemas.xmlsoap.org/ws/2004/08/addressing\">" + messageId
+            + "</wsa:MessageID>" +
+            "<wsa:To xmlns:wsa=\"http://schemas.xmlsoap.org/ws/2004/08/addressing\">" + wsaTo + "</wsa:To>" +
+            "</s:Header>" +
             "<s:Body>" + body + "</s:Body></s:Envelope>";
       } catch (Exception e) {
         throw new RuntimeException(e);
@@ -744,5 +986,74 @@ public class onvif {
       }
       return Collections.emptyIterator();
     }
+  }
+
+  static class SoapEnvelope {
+    public SoapBody Body;
+
+    String getEventsXAddr() {
+      if (Body == null || Body.GetCapabilitiesResponse == null || Body.GetCapabilitiesResponse.Capabilities == null)
+        return null;
+      if (Body.GetCapabilitiesResponse.Capabilities.Events == null)
+        return null;
+      return Body.GetCapabilitiesResponse.Capabilities.Events.XAddr;
+    }
+
+    boolean isPullPointSupported() {
+      if (Body == null || Body.GetCapabilitiesResponse == null || Body.GetCapabilitiesResponse.Capabilities == null)
+        return false;
+      EventsCap events = Body.GetCapabilitiesResponse.Capabilities.Events;
+      if (events == null || events.WSPullPointSupport == null)
+        return false;
+      return Boolean.parseBoolean(events.WSPullPointSupport);
+    }
+
+    String getSubscriptionAddress() {
+      if (Body == null || Body.CreatePullPointSubscriptionResponse == null)
+        return null;
+      if (Body.CreatePullPointSubscriptionResponse.SubscriptionReference == null)
+        return null;
+      return Body.CreatePullPointSubscriptionResponse.SubscriptionReference.Address;
+    }
+
+    PullMessagesResponse getPullMessagesResponse() {
+      return Body != null ? Body.PullMessagesResponse : null;
+    }
+  }
+
+  static class SoapBody {
+    public GetCapabilitiesResponse GetCapabilitiesResponse;
+    public CreatePullPointSubscriptionResponse CreatePullPointSubscriptionResponse;
+    public PullMessagesResponse PullMessagesResponse;
+  }
+
+  static class GetCapabilitiesResponse {
+    public Capabilities Capabilities;
+  }
+
+  static class Capabilities {
+    public EventsCap Events;
+  }
+
+  static class EventsCap {
+    public String XAddr;
+    public String WSPullPointSupport;
+  }
+
+  static class CreatePullPointSubscriptionResponse {
+    public SubscriptionReference SubscriptionReference;
+  }
+
+  static class SubscriptionReference {
+    public String Address;
+  }
+
+  static class PullMessagesResponse {
+    public JsonNode NotificationMessage;
+  }
+
+  static class NotificationMessage {
+    public JsonNode Topic;
+    public JsonNode Message;
   }
 }

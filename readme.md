@@ -2,9 +2,12 @@
 
 A professional, hardened command-line utility for discovering and managing ONVIF-compatible IP cameras, built with Java and JBang.
 
+## Features
+
+- autodiscovery of onvif devices/cams in the local network
+- devices database (credentials, aliases, urls)
+
 ## Usage
-
-
 
 ### Installation & Execution
 
@@ -140,3 +143,16 @@ git clone https://github.com/raisercostin/onvif.git
 cd onvif
 jbang onvif.java discover
 ```
+
+## History
+
+- 2025-12-24 - initial version for discovery, device management
+- 2025-12-26 - stream discovery
+- 2025-12-28 - add device events pulling
+
+## Thanks
+
+- Simple, sane and state of the art cli commands: git, kube, adb, helm, docker swarm.
+- AgentDVR for showing what is possible with onvif devices including autodiscovery
+  - https://www.ispyconnect.com/download
+  - https://github.com/ispysoftware/iSpy

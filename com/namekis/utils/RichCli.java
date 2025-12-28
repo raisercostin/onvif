@@ -148,7 +148,6 @@ public class RichCli {
    * Execute a subcommand with arguments after a `---`.
    */
   public static void main(String[] args, Consumer<String[]> command) {
-    log.debug("Execute the command. Arguments after `--` are passed through.");
     java.util.List<String> logArgs = new java.util.ArrayList<>();
     java.util.List<String> passthrough = new java.util.ArrayList<>();
     boolean separator = false;
@@ -166,7 +165,8 @@ public class RichCli {
 
     BaseOptions opts = configureLogbackByVerbosity(logArgs.toArray(new String[0]));
     try {
-      log.debug("Executing command with arguments: [{}]", String.join(" ", passthrough));
+      log.debug("Executing command with arguments after `--` that are passed through: [{}]",
+          String.join(" ", passthrough));
       command.accept(passthrough.toArray(new String[0]));
     } catch (Exception ex) {
       if (opts.trace) {
