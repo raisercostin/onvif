@@ -256,7 +256,7 @@ public class onvif {
           } else if (response.statusCode() == 401 || response.body().contains("Unauthorized")
               || response.body().contains("NotAuthorized")) {
             // Protocol-level Auth rejection (401 or SOAP Fault containing "Unauthorized")
-            return "🔐 AUTH REQ " + response.statusCode() + " [" + response.body() + "]";
+            return "🔐 AUTH REQ " + response.statusCode();
           } else {
             return "⚠️ HTTP " + response.statusCode() + " [" + response.body() + "]";
           }
@@ -447,7 +447,8 @@ public class onvif {
       return list;
     }
 
-    @Command(name = "describe", aliases = { "dump" }, description = "Describe camera details as JSON.", mixinStandardHelpOptions = true)
+    @Command(name = "describe", aliases = {
+        "dump" }, description = "Describe camera details as JSON.", mixinStandardHelpOptions = true)
     public void describe(
         @Parameters(index = "0", arity = "0..1", description = "Device alias or URL", completionCandidates = DeviceAliasCandidates.class) String targetParam,
         @Option(names = "--all", description = "Include all sections.") boolean all,
@@ -586,6 +587,8 @@ public class onvif {
                 out.set("message", msg.Message);
               System.out.println(JSON_MAPPER.writeValueAsString(out));
             }
+          } else {
+            System.out.println("{}");
           }
           if (once)
             break;
@@ -736,7 +739,7 @@ public class onvif {
         while (true) {
           try {
             attempts++;
-            System.setProperty("jdk.httpclient.allowRestrictedHeaders", "Connection");
+            // System.setProperty("jdk.httpclient.allowRestrictedHeaders", "Connection");
 
             HttpClient client = HttpClient.newBuilder()
                 .connectTimeout(java.time.Duration.ofSeconds(timeout))
@@ -748,18 +751,20 @@ public class onvif {
                 .uri(URI.create(url))
                 .POST(HttpRequest.BodyPublishers.ofString(xml));
             builder.header("User-Agent", "Mozilla/5.0 (Linux)");
-            builder.header("Connection", "keep-alive");
+            // builder.header("Connection", "keep-alive");
             if (soapAction != null) {
               if (contentTypeOverride == null) {
                 contentType = contentType + "; action=\"" + soapAction + "\"";
               }
               builder.header("SOAPAction", soapAction);
             }
-            if (t.user != null && t.pass != null) {
-              String creds = t.user + ":" + t.pass;
-              String basic = Base64.getEncoder().encodeToString(creds.getBytes(StandardCharsets.UTF_8));
-              builder.header("Authorization", "Basic " + basic);
-            }
+            // Basic Auth removed to avoid conflict with WS-Security
+            // if (t.user != null && t.pass != null) {
+            // String creds = t.user + ":" + t.pass;
+            // String basic =
+            // Base64.getEncoder().encodeToString(creds.getBytes(StandardCharsets.UTF_8));
+            // builder.header("Authorization", "Basic " + basic);
+            // }
             HttpRequest request = builder.header("Content-Type", contentType).build();
 
             log.debug("[{}] [{}] POST {} attempt {}/{}", t.alias, action, url, attempts, retries);

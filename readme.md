@@ -76,12 +76,56 @@ Profile: jpegStream      | Token: profile_3  | Res: 640x360    | URI: rtsp://192
 ...same
 ```
 
-#### JSON Dump
+### Device describe
 
 Export the complete camera configuration (resolution, codecs, analytics, etc.) as structured JSON:
 
 ```bash
-onvif describe <device> --quiet | jq .
+λ onvif describe cam-21 --device-info --system-time | jq .
+```
+```json
+{
+  "deviceInfo": {
+    "Manufacturer": "tp-link",
+    "Model": "Tapo C200",
+    "FirmwareVersion": "1.3.1 Build 250910 Rel.65017n",
+    "SerialNumber": "7461a8dd",
+    "HardwareId": "5.0"
+  },
+  "systemTime": {
+    "SystemDateAndTime": {
+      "DateTimeType": "NTP",
+      "DaylightSavings": "true",
+      "TimeZone": {
+        "TZ": "GMT-02:00"
+      },
+      "UTCDateTime": {
+        "Time": {
+          "Hour": "17",
+          "Minute": "19",
+          "Second": "2"
+        },
+        "Date": {
+          "Year": "2025",
+          "Month": "12",
+          "Day": "28"
+        }
+      },
+      "LocalDateTime": {
+        "Time": {
+          "Hour": "19",
+          "Minute": "19",
+          "Second": "2"
+        },
+        "Date": {
+          "Year": "2025",
+          "Month": "12",
+          "Day": "28"
+        }
+      }
+    }
+  }
+}
 ```
 
 ### Global Options
