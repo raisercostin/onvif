@@ -1,6 +1,6 @@
 # ONVIF CLI
 
-A professional, hardened command-line utility for discovering and managing ONVIF-compatible IP cameras, built with Java and JBang.
+Discover, manage, and interact with your ONVIF IP cameras directly from the terminal. A powerful, standalone utility for scripting and device management.
 
 ## Features
 
@@ -145,7 +145,7 @@ All commands inherit standard flags for execution control and logging:
 * **Multi-Interface Discovery**: Launch UDP probes in parallel across all valid IPv4 interfaces.
 * **SOAP & WS-Security**: Communication is handled via manual XML templates to eliminate heavy dependencies, using `PasswordDigest` (Nonce + Timestamp + SHA1) for secure authentication.
 
-### TDD
+### Testing
 
 Run tests with `jbang onvif_test.java`
 
@@ -197,12 +197,35 @@ jbang onvif.java discover
 - 2025-12-26 - stream discovery
 - 2025-12-28 - add device events pulling
 
+## Roadmap
+
+### DONE
+- [x] **Discovery**: Autodiscovery of ONVIF devices via UDP multicast probing.
+- [x] **Device Management**: Secure storage of credentials and aliases in `~/.onvif/config.yaml`.
+- [x] **Stream Discovery**: Enumeration of RTSP URIs for all device profiles.
+- [x] **Events**: Real-time event subscription via PullPoint model.
+
+### Upcoming Features & Target Syntax
+The following commands act as the specification for planned features.
+
+- [ ] **Native Recording**: Capture video streams directly to disk.
+  - *Spec / Target*: `ffmpeg -rtsp_transport tcp -i "rtsp://admin:pass@IP:554/stream1" -map 0 -c copy -f segment -segment_time 3600 -segment_format matroska -segment_wrap 240 -reset_timestamps 1 "capture-%03d.mkv"`
+- [ ] **Snapshot**: Capture a single static image from the main stream.
+  - *Target*: `onvif snapshot [device-alias]`
+- [ ] **Stream Viewer**: Launch an external player (VLC) for a specific stream.
+  - *Spec / Target*: `vlc rtsp://admin:pass@IP:554/stream1`
+- [ ] **PTZ Control**: Pan, Tilt, and Zoom control for supported devices.
+  - *Target*: `onvif ptz [device-alias] --move-left`
+
 ## Thanks
 
 - Simple, sane and state of the art cli commands: git, kube, adb, helm, docker swarm.
 - AgentDVR for showing what is possible with onvif devices including autodiscovery
   - https://www.ispyconnect.com/download
   - https://github.com/ispysoftware/iSpy
+- ONVIF(Open Network Video Interface Forum) standards
+  - https://www.onvif.org/wp-content/uploads/2016/12/ONVIF_WG-APG-Application_Programmers_Guide-1.pdf
+  - https://www.onvif.org/specs/core/ONVIF-Core-Specification-v1712.pdf
 
 ## Notes
 
