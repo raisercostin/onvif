@@ -5,7 +5,10 @@ A professional, hardened command-line utility for discovering and managing ONVIF
 ## Features
 
 - autodiscovery of onvif devices/cams in the local network
-- devices database (credentials, aliases, urls)
+- device database (credentials, aliases, urls)
+- device list (--check)
+- device describe (profiles, capabilities, device-info, system-time, services, event-properties)
+- device events
 
 ## Usage
 
@@ -78,7 +81,7 @@ Profile: jpegStream      | Token: profile_3  | Res: 640x360    | URI: rtsp://192
 Export the complete camera configuration (resolution, codecs, analytics, etc.) as structured JSON:
 
 ```bash
-onvif dump <device> --quiet | jq .
+onvif describe <device> --quiet | jq .
 ```
 
 ### Global Options
@@ -156,3 +159,7 @@ jbang onvif.java discover
 - AgentDVR for showing what is possible with onvif devices including autodiscovery
   - https://www.ispyconnect.com/download
   - https://github.com/ispysoftware/iSpy
+
+## Notes
+
+> The ONVIF PullPoint model is a long‑poll loop: the client sends PullMessages with a timeout, the device holds the HTTP connection until it has events or the timeout expires, then the client immediately issues another PullMessages. Many devices cap the timeout (often ~10s) regardless of what you ask, so you end up reconnecting every ~10s. For fewer reconnects, the alternative is the push/Notify model (device calls back to your endpoint), but that requires exposing a listener and is less reliable in NAT setups. Usually they have a short buffer, if any. PullPoint is “fetch what’s available now” with a per‑subscription queue; devices often keep a small FIFO and drop old events. There’s no standard “give me the last hour” query in ONVIF events. You can set MessageLimit and use short timeouts to drain the current queue, but if the device didn’t buffer them (or already dropped them), you can’t retrieve older events. Some vendors have proprietary history APIs, but it’s not part of the core ONVIF Events spec.

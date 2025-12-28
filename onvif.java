@@ -447,16 +447,75 @@ public class onvif {
       return list;
     }
 
-    @Command(description = "Dump full camera profiles as JSON.")
-    public void dump(
-        @Parameters(index = "0", arity = "0..1", description = "Device alias or URL", completionCandidates = DeviceAliasCandidates.class) String targetParam) {
+    @Command(name = "describe", aliases = { "dump" }, description = "Describe camera details as JSON.", mixinStandardHelpOptions = true)
+    public void describe(
+        @Parameters(index = "0", arity = "0..1", description = "Device alias or URL", completionCandidates = DeviceAliasCandidates.class) String targetParam,
+        @Option(names = "--all", description = "Include all sections.") boolean all,
+        @Option(names = "--profiles", description = "Include GetProfiles output.", negatable = true) Boolean profiles,
+        @Option(names = "--capabilities", description = "Include GetCapabilities output.", negatable = true) Boolean capabilities,
+        @Option(names = "--device-info", description = "Include GetDeviceInformation output.", negatable = true) Boolean deviceInfo,
+        @Option(names = "--system-time", description = "Include GetSystemDateAndTime output.", negatable = true) Boolean systemTime,
+        @Option(names = "--services", description = "Include GetServices output.", negatable = true) Boolean services,
+        @Option(names = "--event-properties", description = "Include GetEventProperties output.", negatable = true) Boolean eventProperties) {
       DeviceProfile t = resolveTarget(targetParam);
       try {
-        String xmlResponse = postSoap(t, t.url,
-            buildSoapEnvelope(t.user, t.pass, "<GetProfiles xmlns=\"http://www.onvif.org/ver10/media/wsdl\"/>"),
-            "GetProfiles");
-        JsonNode profiles = XML_MAPPER.readTree(xmlResponse.getBytes()).get("Body").get("GetProfilesResponse");
-        System.out.println(JSON_MAPPER.writerWithDefaultPrettyPrinter().writeValueAsString(profiles));
+        ObjectNode out = JSON_MAPPER.createObjectNode();
+        boolean anyFlagSet = profiles != null || capabilities != null || deviceInfo != null || systemTime != null
+            || services != null || eventProperties != null;
+        boolean anyNegative = (profiles != null && !profiles) || (capabilities != null && !capabilities)
+            || (deviceInfo != null && !deviceInfo) || (systemTime != null && !systemTime)
+            || (services != null && !services) || (eventProperties != null && !eventProperties);
+        boolean baselineAll = all || !anyFlagSet || anyNegative;
+
+        if (baselineAll ? profiles != Boolean.FALSE : profiles == Boolean.TRUE) {
+          String profilesXml = postSoap(t, t.url,
+              buildSoapEnvelope(t.user, t.pass, "<GetProfiles xmlns=\"http://www.onvif.org/ver10/media/wsdl\"/>"),
+              "GetProfiles");
+          JsonNode profilesNode = XML_MAPPER.readTree(profilesXml.getBytes()).get("Body").get("GetProfilesResponse");
+          out.set("profiles", profilesNode);
+        }
+
+        if (baselineAll ? capabilities != Boolean.FALSE : capabilities == Boolean.TRUE) {
+          String capXml = postSoap(t, t.url, buildSoapEnvelope(t.user, t.pass,
+              "<GetCapabilities xmlns=\"http://www.onvif.org/ver10/device/wsdl\"><Category>All</Category></GetCapabilities>"),
+              "GetCapabilities");
+          JsonNode cap = XML_MAPPER.readTree(capXml.getBytes()).get("Body").get("GetCapabilitiesResponse");
+          out.set("capabilities", cap);
+        }
+
+        if (baselineAll ? deviceInfo != Boolean.FALSE : deviceInfo == Boolean.TRUE) {
+          String infoXml = postSoap(t, t.url, buildSoapEnvelope(t.user, t.pass,
+              "<GetDeviceInformation xmlns=\"http://www.onvif.org/ver10/device/wsdl\"/>"),
+              "GetDeviceInformation");
+          JsonNode info = XML_MAPPER.readTree(infoXml.getBytes()).get("Body").get("GetDeviceInformationResponse");
+          out.set("deviceInfo", info);
+        }
+
+        if (baselineAll ? systemTime != Boolean.FALSE : systemTime == Boolean.TRUE) {
+          String timeXml = postSoap(t, t.url, buildSoapEnvelope(t.user, t.pass,
+              "<GetSystemDateAndTime xmlns=\"http://www.onvif.org/ver10/device/wsdl\"/>"),
+              "GetSystemDateAndTime");
+          JsonNode time = XML_MAPPER.readTree(timeXml.getBytes()).get("Body").get("GetSystemDateAndTimeResponse");
+          out.set("systemTime", time);
+        }
+
+        if (baselineAll ? services != Boolean.FALSE : services == Boolean.TRUE) {
+          String servicesXml = postSoap(t, t.url, buildSoapEnvelope(t.user, t.pass,
+              "<GetServices xmlns=\"http://www.onvif.org/ver10/device/wsdl\"><IncludeCapability>true</IncludeCapability></GetServices>"),
+              "GetServices");
+          JsonNode servicesNode = XML_MAPPER.readTree(servicesXml.getBytes()).get("Body").get("GetServicesResponse");
+          out.set("services", servicesNode);
+        }
+
+        if (baselineAll ? eventProperties != Boolean.FALSE : eventProperties == Boolean.TRUE) {
+          String eventsXml = postSoap(t, t.url, buildSoapEnvelope(t.user, t.pass,
+              "<GetEventProperties xmlns=\"http://www.onvif.org/ver10/events/wsdl\"/>"),
+              "GetEventProperties");
+          JsonNode eventsNode = XML_MAPPER.readTree(eventsXml.getBytes()).get("Body").get("GetEventPropertiesResponse");
+          out.set("eventProperties", eventsNode);
+        }
+
+        System.out.println(JSON_MAPPER.writerWithDefaultPrettyPrinter().writeValueAsString(out));
       } catch (Exception e) {
         throw sneakyThrow(e);
       }
@@ -465,11 +524,14 @@ public class onvif {
     @Command(description = "Stream ONVIF events as JSON.")
     public void events(
         @Parameters(index = "0", arity = "0..1", description = "Device alias or URL", completionCandidates = DeviceAliasCandidates.class) String targetParam,
-        @Option(names = "--pull-timeout", defaultValue = "60", description = "PullMessages timeout in seconds.") int pullTimeout,
+        @Option(names = "--pull-timeout", defaultValue = "10", description = "PullMessages timeout in seconds. Devices may close the connection if no messages are available within this time and might anyway max it out to 10s.") int pullTimeout,
         @Option(names = "--limit", defaultValue = "50", description = "Message limit per PullMessages call.") int messageLimit,
         @Option(names = "--once", description = "Exit after a single PullMessages call.") boolean once) {
       DeviceProfile t = resolveTarget(targetParam);
       try {
+        if (pullTimeout > 10) {
+          log.warn("PullMessages timeout {}s exceeds 10s; some devices close early (EOF).", pullTimeout);
+        }
         String capRes = postSoap(t, t.url, buildSoapEnvelope(t.user, t.pass,
             "<GetCapabilities xmlns=\"http://www.onvif.org/ver10/device/wsdl\"><Category>All</Category></GetCapabilities>"),
             "GetCapabilities");
@@ -499,19 +561,16 @@ public class onvif {
           String pullRes;
           try {
             pullRes = postSoap(t, subAddress, buildSoapEnvelope(t.user, t.pass, pullBody),
-                "PullMessages",
+                "PullMessages " + pullTimeout + "s/" + messageLimit + "messages socketTimeout " + timeout + "s",
                 "http://www.onvif.org/ver10/events/wsdl/PullPointSubscription/PullMessagesRequest");
           } catch (Exception e) {
-            Throwable cause = (e instanceof RuntimeException && e.getCause() != null) ? e.getCause() : e;
-            if (cause instanceof IOException) {
-              log.info("PullMessages failed at {}. Falling back to Events XAddr. (Use --trace for full stack trace)",
-                  subAddress);
-              pullRes = postSoap(t, eventsUrl, buildSoapEnvelope(t.user, t.pass, pullBody),
-                  "PullMessages",
-                  "http://www.onvif.org/ver10/events/wsdl/PullPointSubscription/PullMessagesRequest");
-            } else {
-              throw sneakyThrow(e);
+            if (isNoBytesException(e)) {
+              log.debug("PullMessages returned no data at {}. (Use --trace for full stack trace)", subAddress);
+              if (once)
+                break;
+              continue;
             }
+            throw sneakyThrow(e);
           }
           SoapEnvelope pullEnv = xmlToEnvelope(pullRes);
           PullMessagesResponse response = pullEnv.getPullMessagesResponse();
@@ -677,7 +736,6 @@ public class onvif {
         while (true) {
           try {
             attempts++;
-            log.debug("[{}] [{}] POST {} attempt {}/{}", t.alias, action, url, attempts, retries);
             System.setProperty("jdk.httpclient.allowRestrictedHeaders", "Connection");
 
             HttpClient client = HttpClient.newBuilder()
@@ -704,6 +762,7 @@ public class onvif {
             }
             HttpRequest request = builder.header("Content-Type", contentType).build();
 
+            log.debug("[{}] [{}] POST {} attempt {}/{}", t.alias, action, url, attempts, retries);
             HttpResponse<String> response = client.send(request, HttpResponse.BodyHandlers.ofString());
             if (response.statusCode() != 200) {
               String body = response.body();
@@ -715,6 +774,8 @@ public class onvif {
             log.trace("[{}] [{}] POST {} response: {}", t.alias, action, url, response.body());
             return response.body();
           } catch (Exception e) {
+            if (action != null && action.startsWith("PullMessages") && isNoBytesException(e))
+              throw sneakyThrow(e);
             if (attempts >= retries)
               throw sneakyThrow(e); // Last attempt failed, propagate
             log.warn("[{}] [{}] POST {} attempt {}/{} failed: {}. Retrying.... Enable trace for full stacktrace.",
@@ -727,6 +788,12 @@ public class onvif {
       } catch (InterruptedException e) {
         throw sneakyThrow(e);
       }
+    }
+
+    private boolean isNoBytesException(Throwable e) {
+      Throwable cause = (e instanceof RuntimeException && e.getCause() != null) ? e.getCause() : e;
+      return cause instanceof IOException && cause.getMessage() != null
+          && cause.getMessage().contains("HTTP/1.1 header parser received no bytes");
     }
 
     /**

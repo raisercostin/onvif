@@ -102,8 +102,8 @@ public class onvif_test {
     }
 
     @Test
-    void dumpByDeviceAliasPrintsProfiles() {
-      CommandResult result = runCommand("dump", "-d", "cam-21");
+    void describeByDeviceAliasPrintsProfiles() {
+      CommandResult result = runCommand("describe", "-d", "cam-21");
       assertThat(result.exitCode).isEqualTo(0);
       assertThat(result.output).contains("PTZConfiguration");
       assertThat(result.output).contains("mainStream");
