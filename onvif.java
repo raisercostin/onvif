@@ -5,6 +5,7 @@
 //DEPS com.fasterxml.jackson.dataformat:jackson-dataformat-xml:2.15.2
 //DEPS com.fasterxml.jackson.dataformat:jackson-dataformat-yaml:2.15.2
 //DEPS com.fasterxml.jackson.core:jackson-databind:2.15.2
+//DEPS org.zeroturnaround:zt-exec:1.12
 //SOURCES com/namekis/utils/RichCli.java
 
 import picocli.CommandLine;
@@ -57,6 +58,9 @@ public class onvif {
 
   @Command(name = "onvif", mixinStandardHelpOptions = true, version = "0.9.0", subcommands = {
       MainCommand.DeviceCmd.class,
+      MainCommand.PlayCmd.class,
+      MainCommand.SnapshotCmd.class,
+      MainCommand.RecordCmd.class,
       CommandLine.HelpCommand.class
   })
   public static class MainCommand extends RichCli.BaseOptions {
@@ -69,6 +73,10 @@ public class onvif {
     @Option(names = { "-r",
         "--retries" }, defaultValue = "3", description = "Number of UDP probe attempts per interface (default: 3).", scope = ScopeType.INHERIT)
     int retries;
+
+    @Option(names = {
+        "--dry-run" }, description = "Log the command that would be executed without running it.", scope = ScopeType.INHERIT)
+    boolean dryRun;
 
     @Option(names = { "-d",
         "--device" }, description = "Target device alias. Candidates: ${COMPLETION-CANDIDATES}", scope = ScopeType.INHERIT, completionCandidates = DeviceAliasCandidates.class)
@@ -320,6 +328,186 @@ public class onvif {
         } catch (Exception e) {
           return "cam-" + UUID.randomUUID().toString().substring(0, 4);
         }
+      }
+    }
+
+    // --- MEDIA UTILS ---
+    private String getBestStreamUri(DeviceProfile t, String profileName) {
+      try {
+        // 1. GetProfiles to find the token
+        String profRes = postSoap(t, t.url,
+            buildSoapEnvelope(t.user, t.pass, "<GetProfiles xmlns=\"http://www.onvif.org/ver10/media/wsdl\"/>"),
+            "GetProfiles");
+        List<OnvifProfile> profiles = parseProfiles(profRes);
+
+        if (profiles.isEmpty())
+          throw new RuntimeException("No profiles found on device.");
+
+        // Select profile: specific name or first available
+        OnvifProfile selected = profiles.stream()
+            .filter(p -> profileName != null && p.name.equals(profileName))
+            .findFirst()
+            .orElse(profiles.get(0));
+
+        log.info("Using profile: {} (Token: {})", selected.name, selected.token);
+
+        // 2. GetStreamUri for the token
+        String streamSoap = buildSoapEnvelope(t.user, t.pass,
+            "<GetStreamUri xmlns=\"http://www.onvif.org/ver10/media/wsdl\"><StreamSetup>" +
+                "<Stream xmlns=\"http://www.onvif.org/ver10/schema\">RTP-Unicast</Stream>" +
+                "<Transport xmlns=\"http://www.onvif.org/ver10/schema\"><Protocol>RTSP</Protocol></Transport></StreamSetup>"
+                +
+                "<ProfileToken>" + selected.token + "</ProfileToken></GetStreamUri>");
+
+        String streamRes = postSoap(t, t.url, streamSoap, "GetStreamUri");
+        String uri = extractTag(streamRes, "Uri");
+        if (uri == null)
+          uri = extractTag(streamRes, "tt:Uri");
+
+        if (uri == null || uri.isBlank())
+          throw new RuntimeException("Failed to retrieve RTSP URI for profile " + selected.name);
+
+        // Inject credentials into URI
+        // Format: rtsp://user:pass@host:port/path
+        if (uri.startsWith("rtsp://")) {
+          // Check if URI already has auth
+          String noScheme = uri.substring(7);
+          if (!noScheme.contains("@")) {
+            return "rtsp://" + t.user + ":" + t.pass + "@" + noScheme;
+          }
+        }
+        return uri;
+
+      } catch (Exception e) {
+        throw sneakyThrow(e);
+      }
+    }
+
+    @Command(name = "play", aliases = { "view" }, description = "Play the live stream using VLC.")
+    public static class PlayCmd implements Runnable {
+      @ParentCommand
+      MainCommand parent;
+
+      @Parameters(index = "0", arity = "0..1", description = "Device alias")
+      String device;
+
+      @Option(names = "--profile", description = "Specific profile name to use")
+      String profile;
+
+      @Option(names = "--allow-pass", description = "Show full password in logs/command output")
+      boolean allowPass;
+
+      @Override
+      public void run() {
+        DeviceProfile t = parent.resolveTarget(device);
+        String uri = parent.getBestStreamUri(t, profile);
+
+        // VLC command: vlc <uri>
+        List<String> cmd = new ArrayList<>();
+        // On Windows it might just be 'vlc', on others maybe 'cvlc' or 'vlc'
+        // We assume 'vlc' is in PATH.
+        cmd.add("vlc");
+        cmd.add(uri);
+
+        exec(cmd, allowPass, parent.dryRun);
+      }
+    }
+
+    @Command(name = "snapshot", description = "Take a JPEG snapshot using ffmpeg.")
+    public static class SnapshotCmd implements Runnable {
+      @ParentCommand
+      MainCommand parent;
+
+      @Parameters(index = "0", arity = "0..1", description = "Device alias")
+      String device;
+
+      @Option(names = "--out", description = "Output filename (default: <alias>-<timestamp>.jpg)")
+      String outFile;
+
+      @Option(names = "--allow-pass", description = "Show full password in logs/command output")
+      boolean allowPass;
+
+      @Override
+      public void run() {
+        DeviceProfile t = parent.resolveTarget(device);
+        String uri = parent.getBestStreamUri(t, null);
+
+        if (outFile == null) {
+          outFile = t.alias + "-" + Instant.now().toString().replaceAll("[:.]", "-") + ".jpg";
+        }
+
+        // ffmpeg -y -i <uri> -vframes 1 <outFile>
+        List<String> cmd = new ArrayList<>();
+        cmd.add("ffmpeg");
+        cmd.add("-y");
+        cmd.add("-i");
+        cmd.add(uri);
+        cmd.add("-vframes");
+        cmd.add("1");
+        cmd.add(outFile);
+
+        exec(cmd, allowPass, parent.dryRun);
+      }
+    }
+
+    @Command(name = "record", description = "Record the stream to a file using ffmpeg.")
+    public static class RecordCmd implements Runnable {
+      @ParentCommand
+      MainCommand parent;
+
+      @Parameters(index = "0", arity = "0..1", description = "Device alias")
+      String device;
+
+      @Option(names = "--out", description = "Output filename pattern (default: <alias>-capture.mkv)")
+      String outFile;
+
+      @Option(names = "--segment", description = "Enable segmented recording (every 1 hour)")
+      boolean segment;
+
+      @Option(names = "--allow-pass", description = "Show full password in logs/command output")
+      boolean allowPass;
+
+      @Override
+      public void run() {
+        DeviceProfile t = parent.resolveTarget(device);
+        String uri = parent.getBestStreamUri(t, null);
+
+        if (outFile == null) {
+          outFile = t.alias + "-capture.mkv";
+        }
+
+        List<String> cmd = new ArrayList<>();
+        cmd.add("ffmpeg");
+        // Improve robustnes over tcp
+        cmd.add("-rtsp_transport");
+        cmd.add("tcp");
+
+        cmd.add("-i");
+        cmd.add(uri);
+
+        cmd.add("-map");
+        cmd.add("0");
+
+        cmd.add("-c");
+        cmd.add("copy"); // Copy codec (no re-encode)
+
+        if (segment) {
+          // -f segment -segment_time 3600 -segment_format matroska -segment_wrap 240
+          // -reset_timestamps 1 "capture-%03d.mkv"
+          cmd.add("-f");
+          cmd.add("segment");
+          cmd.add("-segment_time");
+          cmd.add("3600");
+          cmd.add("-segment_format");
+          cmd.add("matroska");
+          // Reset timestamps to avoid sync issues in segments
+          cmd.add("-reset_timestamps");
+          cmd.add("1");
+        }
+
+        cmd.add(outFile);
+
+        exec(cmd, allowPass, parent.dryRun);
       }
     }
 
@@ -1120,5 +1308,26 @@ public class onvif {
   static class NotificationMessage {
     public JsonNode Topic;
     public JsonNode Message;
+  }
+
+  // --- PROCESS EXECUTOR HELPER ---
+  public static void exec(java.util.List<String> cmd, boolean allowPass, boolean dryRun) {
+    String commandLine = String.join(" ", cmd);
+    String safeCmd = allowPass ? commandLine : commandLine.replaceAll("://([^:]+):([^@]+)@", "://$1:****@");
+
+    log.info("Executing: {}", safeCmd);
+    if (dryRun) {
+      return;
+    }
+
+    try {
+      new org.zeroturnaround.exec.ProcessExecutor()
+          .command(cmd)
+          .redirectOutput(System.out)
+          .redirectError(System.err)
+          .execute();
+    } catch (Exception e) {
+      throw new RuntimeException("Failed to execute command: " + safeCmd, e);
+    }
   }
 }

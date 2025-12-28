@@ -95,7 +95,7 @@ public class onvif_test {
     @Test
     void streamByDeviceAliasPrintsProfiles() {
       CommandResult result = runCommand("stream", "-d", "cam-21");
-      System.out.println(result.output);
+      System.out.println(result.output); // Debug help
       assertThat(result.exitCode).isEqualTo(0);
       assertThat(result.output).contains("Profile:");
       assertThat(result.output).contains("rtsp://");
@@ -107,6 +107,53 @@ public class onvif_test {
       assertThat(result.exitCode).isEqualTo(0);
       assertThat(result.output).contains("PTZConfiguration");
       assertThat(result.output).contains("mainStream");
+    }
+  }
+
+  public static class MediaCommandTests {
+    // Requires onvif.java to have a 'mock' device or we rely on 'cam-21' being
+    // present in the user's config
+    // We'll use 'cam-21' since it's in the committed config and proven by existing
+    // tests.
+
+    @Test
+    void playCommandGeneratesVlcLog() {
+      // Dry-run should log the command but not execute it.
+      CommandResult result = runCommand("play", "cam-21", "--dry-run");
+      System.out.println("play output: " + result.output);
+      // Expect 0 exit code if command is implemented
+      assertThat(result.exitCode).as("Check play command exists. Output: " + result.output).isEqualTo(0);
+      // Expect log with masked password
+      assertThat(result.output).contains("Executing: vlc rtsp://costin:****@192.168.1.21");
+    }
+
+    @Test
+    void playCommandUnmaskedWithAllowPass() {
+      CommandResult result = runCommand("play", "cam-21", "--dry-run", "--allow-pass");
+      assertThat(result.exitCode).isEqualTo(0);
+      // Expect log with visible password (dummy credentials from config)
+      // Note: We don't know the exact password in the test env easily without reading
+      // config,
+      // but we know it should NOT be ****
+      assertThat(result.output).contains("vlc rtsp://costin:");
+      assertThat(result.output).doesNotContain("****");
+    }
+
+    @Test
+    void snapshotCommandGeneratesFfmpegLog() {
+      CommandResult result = runCommand("snapshot", "cam-21", "--dry-run");
+      assertThat(result.exitCode).isEqualTo(0);
+      assertThat(result.output).contains("Executing: ffmpeg -y -i rtsp://costin:****@192.168.1.21");
+      assertThat(result.output).contains("-vframes 1");
+      assertThat(result.output).contains(".jpg"); // Default extension
+    }
+
+    @Test
+    void recordCommandGeneratesFfmpegLog() {
+      CommandResult result = runCommand("record", "cam-21", "--dry-run");
+      assertThat(result.exitCode).isEqualTo(0);
+      assertThat(result.output).contains("Executing: ffmpeg -rtsp_transport tcp -i rtsp://costin:****@192.168.1.21");
+      assertThat(result.output).contains("-c copy");
     }
   }
 }
