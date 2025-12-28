@@ -739,7 +739,6 @@ public class onvif {
         while (true) {
           try {
             attempts++;
-            // System.setProperty("jdk.httpclient.allowRestrictedHeaders", "Connection");
 
             HttpClient client = HttpClient.newBuilder()
                 .connectTimeout(java.time.Duration.ofSeconds(timeout))
@@ -751,20 +750,13 @@ public class onvif {
                 .uri(URI.create(url))
                 .POST(HttpRequest.BodyPublishers.ofString(xml));
             builder.header("User-Agent", "Mozilla/5.0 (Linux)");
-            // builder.header("Connection", "keep-alive");
             if (soapAction != null) {
               if (contentTypeOverride == null) {
                 contentType = contentType + "; action=\"" + soapAction + "\"";
               }
               builder.header("SOAPAction", soapAction);
             }
-            // Basic Auth removed to avoid conflict with WS-Security
-            // if (t.user != null && t.pass != null) {
-            // String creds = t.user + ":" + t.pass;
-            // String basic =
-            // Base64.getEncoder().encodeToString(creds.getBytes(StandardCharsets.UTF_8));
-            // builder.header("Authorization", "Basic " + basic);
-            // }
+
             HttpRequest request = builder.header("Content-Type", contentType).build();
 
             log.debug("[{}] [{}] POST {} attempt {}/{}", t.alias, action, url, attempts, retries);
