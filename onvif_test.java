@@ -14,11 +14,11 @@ import java.io.PrintStream;
 import picocli.CommandLine;
 import org.junit.jupiter.api.Test;
 
-import com.namekis.utils.RichLogback;
+import com.namekis.utils.RichCli;
 
 public class onvif_test {
   public static void main(String... allArgs) {
-    RichLogback.main(allArgs, args -> {
+    RichCli.main(allArgs, args -> {
       java.util.List<String> fullArgs = new java.util.ArrayList<>(java.util.List.of(args));
       if (args.length == 0) {
         fullArgs.add("execute");

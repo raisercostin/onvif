@@ -5,13 +5,13 @@
 //DEPS com.fasterxml.jackson.dataformat:jackson-dataformat-xml:2.15.2
 //DEPS com.fasterxml.jackson.dataformat:jackson-dataformat-yaml:2.15.2
 //DEPS com.fasterxml.jackson.core:jackson-databind:2.15.2
-//SOURCES com/namekis/utils/RichLogback.java
+//SOURCES com/namekis/utils/RichCli.java
 
 import picocli.CommandLine;
 import picocli.CommandLine.*;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import com.namekis.utils.RichLogback;
+import com.namekis.utils.RichCli;
 import com.fasterxml.jackson.databind.*;
 import com.fasterxml.jackson.dataformat.xml.XmlMapper;
 import com.fasterxml.jackson.dataformat.yaml.YAMLMapper;
@@ -38,7 +38,7 @@ public class onvif {
   private static final Path CONFIG_PATH = Paths.get(System.getProperty("user.home"), ".onvif", "config.yaml");
 
   public static void main(String[] args) {
-    RichLogback.main(args, () -> new MainCommand());
+    RichCli.main(args, () -> new MainCommand());
   }
 
   @SuppressWarnings("unchecked")
@@ -50,7 +50,7 @@ public class onvif {
       MainCommand.DeviceCmd.class,
       CommandLine.HelpCommand.class
   })
-  public static class MainCommand extends RichLogback.BaseOptions {
+  public static class MainCommand extends RichCli.BaseOptions {
     final Config cfg = Config.load();
 
     @Option(names = { "-t",

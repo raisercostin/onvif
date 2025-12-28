@@ -46,14 +46,14 @@ import java.util.function.Supplier;
  * TODO: Add levels increased by 10 for more granularity if needed. How will
  * affect -vvvv or -qqqq
  */
-public class RichLogback {
+public class RichCli {
   private static final int LEVEL5_LOGDEBUG = 5;
   private static final int LEVEL4_TRACE = 4;
   private static final int LEVEL3_DEBUG = 3;
   private static final int LEVEL2_INFO = 2;
   private static final int LEVEL1_NORMAL_DETAILED = 1;
   private static final int LEVEL0_NORMAL = 0; // nothing from logs
-  private static final java.util.logging.Logger log = LoggerFactory.getLogger(RichLogback.class);
+  private static final Logger log = LoggerFactory.getLogger(RichCli.class);
 
   public static class BaseOptions {
     @Option(names = { "-q",
