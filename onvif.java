@@ -775,8 +775,9 @@ public class onvif {
               throw sneakyThrow(e);
             if (attempts >= retries)
               throw sneakyThrow(e); // Last attempt failed, propagate
+            String errorMsg = e.getMessage() != null ? e.getMessage() : e.toString();
             log.warn("[{}] [{}] POST {} attempt {}/{} failed: {}. Retrying.... Enable trace for full stacktrace.",
-                t.alias, action, url, attempts, retries, e.getMessage());
+                t.alias, action, url, attempts, retries, errorMsg);
             log.trace("[{}] [{}] POST {} attempt {}/{} failed. Retrying...", t.alias, action, url, attempts, retries,
                 e);
             Thread.sleep(500); // Small backoff
