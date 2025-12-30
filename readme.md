@@ -9,6 +9,8 @@ Discover, manage, and interact with your ONVIF IP cameras directly from the term
 - device list (--check)
 - device describe (profiles, capabilities, device-info, system-time, services, event-properties)
 - device events
+- media streaming (play via VLC)
+- media capture (snapshot and record via ffmpeg)
 
 ## Usage
 
@@ -70,11 +72,46 @@ Found 3 profiles.
 Profile: mainStream      | Token: profile_1  | Res: 1920x1080  | URI: rtsp://192.168.1.21:554/stream1
 Profile: minorStream     | Token: profile_2  | Res: 1280x720   | URI: rtsp://192.168.1.21:554/stream2
 Profile: jpegStream      | Token: profile_3  | Res: 640x360    | URI: rtsp://192.168.1.21:554/stream8
-> onvif stream -d cam-21
-...same
-> onvif stream cam-21
-...same
 ```
+
+### Play live stream
+
+Launch VLC to view the live stream for a device or specific profile.
+
+```bash
+# Play default profile
+onvif play cam-21
+
+# Play specific profile
+onvif play cam-21 --profile profile_2
+```
+*Underlying Spec*: `vlc rtsp://admin:pass@IP:554/stream1`
+
+### Take a snapshot
+
+Capture a single JPEG frame using ffmpeg.
+
+```bash
+# Snapshot with auto-generated filename
+onvif snapshot cam-21
+
+# Specify output file
+onvif snapshot cam-21 --out capture.jpg
+```
+*Underlying Spec*: `ffmpeg -y -i <rtsp_url> -vframes 1 <outFile>`
+
+### Record stream
+
+Record the stream directly to disk without re-encoding.
+
+```bash
+# Basic recording
+onvif record cam-21
+
+# Segmented recording (every 1 hour)
+onvif record cam-21 --segment
+```
+*Underlying Spec*: `ffmpeg -rtsp_transport tcp -i <rtsp_url> -map 0 -c copy -f segment -segment_time 3600 -segment_format matroska -reset_timestamps 1 "capture-%03d.mkv"`
 
 ### Device describe
 
@@ -130,13 +167,32 @@ Export the complete camera configuration (resolution, codecs, analytics, etc.) a
 
 ### Global Options
 
-All commands inherit standard flags for execution control and logging:
+Standard help and version flags:
 
-* `-v, --verbose`: Increase verbosity levels (more v can be given -vvv is DEBUG, -vvvv is TRACE).
-* `-q, --quiet`: Decrease verbosity levels (more q can be given -q is WARN, -qq is ERROR).
-* `-de, --debug`: Displays full logs with source, category and other details.
+* `-h, --help`: Show help message and exit.
+* `-V, --version`: Print version information and exit.
+
+### Device Options
+
+All commands that interact with a device support these overrides:
+
+* `-d, --device=<device>`: Target device alias or URL.
+* `-u, --user=<user>`: Override username for this command.
+* `-p, --pass=<pass>`: Override password (masked by default).
+* `-t, --timeout=<n>`: Network timeout in seconds (default: 5).
+* `-r, --retries=<n>`: Number of discovery retries.
+* `--dry-run`: Log the command that would be executed without running it.
+
+### Development options
+
+Standard flags for execution control and logging:
+
+* `-v, --verbose`: Increase verbosity levels (-v INFO, -vv DEBUG, -vvv TRACE).
+* `-q, --quiet`: Decrease verbosity levels (-q WARN, -qq ERROR).
+* `-de, --debug`: Detailed logging with class names and timestamps.
 * `-tr, --trace`: Show full stack traces for errors.
 * `-co, --[no-]color`: Enable colored output (default: true).
+* `--workdir=<dir>`: Change base folder for config and logs.
 
 ## Development
 
@@ -196,6 +252,7 @@ jbang onvif.java discover
 - 2025-12-24 - initial version for discovery, device management
 - 2025-12-26 - stream discovery
 - 2025-12-28 - add device events pulling
+- 2025-12-30 - implement play, snapshot, record; refine CLI help structure
 
 ## Roadmap
 
@@ -204,16 +261,13 @@ jbang onvif.java discover
 - [x] **Device Management**: Secure storage of credentials and aliases in `~/.onvif/config.yaml`.
 - [x] **Stream Discovery**: Enumeration of RTSP URIs for all device profiles.
 - [x] **Events**: Real-time event subscription via PullPoint model.
+- [x] **Native Recording**: Capture video streams directly to disk using ffmpeg.
+- [x] **Snapshot**: Capture static JPEG images from the main stream.
+- [x] **Stream Viewer**: Launch VLC for live stream playback.
 
 ### Upcoming Features & Target Syntax
 The following commands act as the specification for planned features.
 
-- [ ] **Native Recording**: Capture video streams directly to disk.
-  - *Spec / Target*: `ffmpeg -rtsp_transport tcp -i "rtsp://admin:pass@IP:554/stream1" -map 0 -c copy -f segment -segment_time 3600 -segment_format matroska -segment_wrap 240 -reset_timestamps 1 "capture-%03d.mkv"`
-- [ ] **Snapshot**: Capture a single static image from the main stream.
-  - *Target*: `onvif snapshot [device-alias]`
-- [ ] **Stream Viewer**: Launch an external player (VLC) for a specific stream.
-  - *Spec / Target*: `vlc rtsp://admin:pass@IP:554/stream1`
 - [ ] **PTZ Control**: Pan, Tilt, and Zoom control for supported devices.
   - *Target*: `onvif ptz [device-alias] --move-left`
 

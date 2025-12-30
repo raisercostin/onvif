@@ -57,27 +57,27 @@ public class RichCli {
 
   public static class BaseOptions {
     @Option(names = { "-q",
-        "--quiet" }, description = "Suppress almost all log output. Use multiple (-qqq)", scope = ScopeType.INHERIT)
+        "--quiet" }, description = "Suppress almost all log output. Use multiple (-qqq)")
     public boolean[] quiet = new boolean[0];
 
     @Option(names = { "-v",
-        "--verbose" }, description = "Increase verbosity. Use multiple (-vvv)", scope = ScopeType.INHERIT)
+        "--verbose" }, description = "Increase verbosity. Use multiple (-vvv)")
     public boolean[] verbosity = new boolean[0];
 
     @Option(names = { "-co",
-        "--color" }, description = "Enable colored output (default: true).", defaultValue = "true", negatable = true, showDefaultValue = Visibility.ALWAYS, scope = ScopeType.INHERIT)
+        "--color" }, description = "Enable colored output (default: true).", defaultValue = "true", negatable = true, showDefaultValue = Visibility.ALWAYS)
     public boolean color = true;
 
     @Option(names = { "-de",
-        "--debug" }, description = "Enable debug (default: false).", defaultValue = "false", showDefaultValue = Visibility.ALWAYS, scope = ScopeType.INHERIT)
+        "--debug" }, description = "Enable debug (default: false).", defaultValue = "false", showDefaultValue = Visibility.ALWAYS)
     public boolean debug = false;
 
     @Option(names = { "-tr",
-        "--trace" }, description = "Show full stack traces for errors.", defaultValue = "false", scope = ScopeType.INHERIT)
+        "--trace" }, description = "Show full stack traces for errors.", defaultValue = "false")
     public boolean trace = false;
 
     @Option(names = {
-        "--workdir" }, description = "Base directory for operations (default: current dir)", scope = ScopeType.INHERIT)
+        "--workdir" }, description = "Base directory for operations (default: current dir)")
     public String workdir = System.getProperty("user.dir");
 
     public boolean isQuiet() {

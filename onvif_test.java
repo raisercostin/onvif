@@ -10,6 +10,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 import java.io.ByteArrayOutputStream;
 import java.io.PrintStream;
+import java.util.List;
+import java.util.stream.Collectors;
 
 import picocli.CommandLine;
 import org.junit.jupiter.api.Test;
@@ -154,6 +156,37 @@ public class onvif_test {
       assertThat(result.exitCode).isEqualTo(0);
       assertThat(result.output).contains("Executing: ffmpeg -rtsp_transport tcp -i rtsp://costin:****@192.168.1.21");
       assertThat(result.output).contains("-c copy");
+    }
+
+    @Test
+    void recordHelpOutputOrder() {
+      // Use --no-color to avoid ANSI codes in output
+      CommandResult result = runCommand("record", "-h", "--no-color");
+      assertThat(result.exitCode).isEqualTo(0);
+
+      List<String> lines = result.output.lines().collect(Collectors.toList());
+
+      int segmentIndex = -1;
+      int globalsIndex = -1;
+      int debugIndex = -1;
+
+      for (int i = 0; i < lines.size(); i++) {
+        String line = lines.get(i);
+        if (line.contains("--segment"))
+          segmentIndex = i;
+        if (line.contains("Global Options:"))
+          globalsIndex = i;
+        if (line.contains("--debug"))
+          debugIndex = i;
+      }
+
+      // Verify ordering: Specifics -> Globals -> Standard
+      assertThat(segmentIndex).as("--segment should be present").isGreaterThan(-1);
+      assertThat(globalsIndex).as("Global Options should be present").isGreaterThan(-1);
+      assertThat(debugIndex).as("--debug should be present").isGreaterThan(-1);
+
+      assertThat(segmentIndex).as("Specifics should come before Global Options").isLessThan(globalsIndex);
+      assertThat(globalsIndex).as("Global Options should come before Standard Options (Debug)").isLessThan(debugIndex);
     }
   }
 }
