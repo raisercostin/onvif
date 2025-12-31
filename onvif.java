@@ -121,31 +121,6 @@ public class onvif {
     @ArgGroup(exclusive = false, heading = "Device Options:%n", order = 50)
     DeviceOptions deviceOpts = new DeviceOptions();
 
-    // Default accessors handling nulls
-    int getEffectiveTimeout(DeviceOptions local) {
-      if (local != null && local.timeout != null)
-        return local.timeout;
-      if (deviceOpts.timeout != null)
-        return deviceOpts.timeout;
-      return 5;
-    }
-
-    int getEffectiveRetries(DeviceOptions local) {
-      if (local != null && local.retries != null)
-        return local.retries;
-      if (deviceOpts.retries != null)
-        return deviceOpts.retries;
-      return 3;
-    }
-
-    boolean getEffectiveDryRun(DeviceOptions local) {
-      if (local != null && local.dryRun != null)
-        return local.dryRun;
-      if (deviceOpts.dryRun != null)
-        return deviceOpts.dryRun;
-      return false;
-    }
-
     @Spec
     Model.CommandSpec spec;
 
@@ -268,10 +243,11 @@ public class onvif {
         if (!unregistered) {
           parent.cfg.devices.forEach((id, p) -> {
             String marker = id.equals(parent.cfg.activeDevice) ? "*" : " ";
-            String status = check ? checkStatus(p.url, p.user, p.pass, locals) : "NOT CHECKED";
+            DeviceProfile t = parent.resolveTarget(id, locals);
+            String status = check ? checkStatus(t) : "NOT CHECKED";
             System.out.printf("%s %-20s %-40s %-10s %-30s%n",
-                marker, id, p.url, p.user, status);
-            onNetwork.remove(p.url);
+                marker, id, t.url, t.user, status);
+            onNetwork.remove(t.url);
           });
         }
 
@@ -294,15 +270,15 @@ public class onvif {
       }
 
       // --- PRIVATE HELPERS ---
-      private String checkStatus(String url, String user, String pass, DeviceOptions local) {
-        URI uri = URI.create(url);
+      private String checkStatus(DeviceProfile t) {
+        URI uri = URI.create(t.url);
         String host = uri.getHost();
         int port = uri.getPort() != -1 ? uri.getPort() : 80;
 
         // --- PHASE 1: L4 TCP CHECK (Reachability) ---
         log.trace("First test socket to avoid the overhead of building SOAP if the wire is dead.");
         try (Socket socket = new Socket()) {
-          socket.connect(new InetSocketAddress(host, port), parent.getEffectiveTimeout(local) * 1000);
+          socket.connect(new InetSocketAddress(host, port), t.timeout * 1000);
         } catch (SocketTimeoutException e) {
           parent.standardOpts.debug(log, "L4 TCP connection timed out to " + host + ":" + port, e);
           return "❌ TIMEOUT. WRONG IP?";
@@ -323,10 +299,10 @@ public class onvif {
         try {
           // Minimal ONVIF command to verify credentials and service health
           String body = "<GetDeviceInformation xmlns=\"http://www.onvif.org/ver10/device/wsdl\"/>";
-          String soap = buildSoapEnvelope(user, pass, body);
+          String soap = buildSoapEnvelope(t.user, t.pass, body);
 
           HttpClient client = HttpClient.newBuilder()
-              .connectTimeout(Duration.ofSeconds(parent.getEffectiveTimeout(local)))
+              .connectTimeout(Duration.ofSeconds(t.timeout))
               .build();
 
           HttpRequest request = HttpRequest.newBuilder()
@@ -351,17 +327,17 @@ public class onvif {
           return "❌ TIMEOUT";
         } catch (Exception e) {
           // Catch-all for parser errors, EOF, or SSL issues
-          parent.standardOpts.info(log, "L7 Auth check failed for " + user + "@" + host, e);
+          parent.standardOpts.info(log, "L7 Auth check failed for " + t.user + "@" + host, e);
           return "❓ ERROR";
         }
 
         // --- PHASE 3: EVENTING CHECK ---
         try {
-          DeviceProfile t = new DeviceProfile(url, user, pass);
+          // DeviceProfile t is already available
           t.alias = "check"; // dummy alias
           String capRes = parent.postSoap(t, t.url, buildSoapEnvelope(t.user, t.pass,
               "<GetCapabilities xmlns=\"http://www.onvif.org/ver10/device/wsdl\"><Category>Events</Category></GetCapabilities>"),
-              "GetCapabilities", null, null, null);
+              "GetCapabilities");
           SoapEnvelope capEnv = parent.xmlToEnvelope(capRes);
           if (capEnv.getEventsXAddr() != null && !capEnv.getEventsXAddr().isBlank()) {
             status.append(" | ✅ EVENTS");
@@ -410,12 +386,12 @@ public class onvif {
     }
 
     // --- MEDIA UTILS ---
-    private String getBestStreamUri(DeviceProfile t, String profileName, DeviceOptions local) {
+    private String getBestStreamUri(DeviceProfile t, String profileName) {
       try {
         // 1. GetProfiles to find the token
         String profRes = postSoap(t, t.url,
             buildSoapEnvelope(t.user, t.pass, "<GetProfiles xmlns=\"http://www.onvif.org/ver10/media/wsdl\"/>"),
-            "GetProfiles", null, null, local);
+            "GetProfiles");
         List<OnvifProfile> profiles = parseProfiles(profRes);
 
         if (profiles.isEmpty())
@@ -437,7 +413,7 @@ public class onvif {
                 +
                 "<ProfileToken>" + selected.token + "</ProfileToken></GetStreamUri>");
 
-        String streamRes = postSoap(t, t.url, streamSoap, "GetStreamUri", null, null, local);
+        String streamRes = postSoap(t, t.url, streamSoap, "GetStreamUri");
         String uri = extractTag(streamRes, "Uri");
         if (uri == null)
           uri = extractTag(streamRes, "tt:Uri");
@@ -488,7 +464,7 @@ public class onvif {
       @Override
       public void run() {
         DeviceProfile t = parent.resolveTarget(device, deviceOpts);
-        String uri = parent.getBestStreamUri(t, profile, deviceOpts);
+        String uri = parent.getBestStreamUri(t, profile);
 
         // VLC command: vlc <uri>
         List<String> cmd = new ArrayList<>();
@@ -497,7 +473,7 @@ public class onvif {
         cmd.add("vlc");
         cmd.add(uri);
 
-        exec(cmd, allowPass, parent.getEffectiveDryRun(deviceOpts));
+        exec(cmd, allowPass, t.dryRun);
       }
     }
 
@@ -527,7 +503,7 @@ public class onvif {
       @Override
       public void run() {
         DeviceProfile t = parent.resolveTarget(device, deviceOpts);
-        String uri = parent.getBestStreamUri(t, null, deviceOpts);
+        String uri = parent.getBestStreamUri(t, null);
 
         if (outFile == null) {
           outFile = t.alias + "-" + Instant.now().toString().replaceAll("[:.]", "-") + ".jpg";
@@ -543,7 +519,7 @@ public class onvif {
         cmd.add("1");
         cmd.add(outFile);
 
-        exec(cmd, allowPass, parent.getEffectiveDryRun(deviceOpts));
+        exec(cmd, allowPass, t.dryRun);
       }
     }
 
@@ -576,7 +552,7 @@ public class onvif {
       @Override
       public void run() {
         DeviceProfile t = parent.resolveTarget(device, deviceOpts);
-        String uri = parent.getBestStreamUri(t, null, deviceOpts);
+        String uri = parent.getBestStreamUri(t, null);
 
         if (outFile == null) {
           outFile = t.alias + "-capture.mkv";
@@ -613,7 +589,7 @@ public class onvif {
 
         cmd.add(outFile);
 
-        exec(cmd, allowPass, parent.getEffectiveDryRun(deviceOpts));
+        exec(cmd, allowPass, t.dryRun);
       }
     }
 
@@ -691,7 +667,7 @@ public class onvif {
         try {
           String capRes = parent.postSoap(t, t.url, buildSoapEnvelope(t.user, t.pass,
               "<GetCapabilities xmlns=\"http://www.onvif.org/ver10/device/wsdl\"><Category>Media</Category></GetCapabilities>"),
-              "GetCapabilities", null, null, deviceOpts);
+              "GetCapabilities");
 
           // Fallback-friendly extraction
           String mediaUrl = parent.extractTag(capRes, "XAddr");
@@ -702,7 +678,7 @@ public class onvif {
 
           String profRes = parent.postSoap(t, targetUrl,
               buildSoapEnvelope(t.user, t.pass, "<GetProfiles xmlns=\"http://www.onvif.org/ver10/media/wsdl\"/>"),
-              "GetProfiles", null, null, deviceOpts);
+              "GetProfiles");
 
           List<OnvifProfile> profiles = parent.parseProfiles(profRes);
 
@@ -723,7 +699,7 @@ public class onvif {
                       +
                       "<ProfileToken>" + profile.token + "</ProfileToken></GetStreamUri>");
 
-              String streamRes = parent.postSoap(t, targetUrl, streamSoap, "GetStreamUri", null, null, deviceOpts);
+              String streamRes = parent.postSoap(t, targetUrl, streamSoap, "GetStreamUri");
               String uri = parent.extractTag(streamRes, "Uri");
               if (uri == null)
                 uri = parent.extractTag(streamRes, "tt:Uri");
@@ -830,7 +806,7 @@ public class onvif {
           if (baselineAll ? profiles != Boolean.FALSE : profiles == Boolean.TRUE) {
             String profilesXml = parent.postSoap(t, t.url,
                 buildSoapEnvelope(t.user, t.pass, "<GetProfiles xmlns=\"http://www.onvif.org/ver10/media/wsdl\"/>"),
-                "GetProfiles", null, null, deviceOpts);
+                "GetProfiles");
             JsonNode profilesNode = XML_MAPPER.readTree(profilesXml.getBytes()).get("Body").get("GetProfilesResponse");
             out.set("profiles", profilesNode);
           }
@@ -838,7 +814,7 @@ public class onvif {
           if (baselineAll ? capabilities != Boolean.FALSE : capabilities == Boolean.TRUE) {
             String capXml = parent.postSoap(t, t.url, buildSoapEnvelope(t.user, t.pass,
                 "<GetCapabilities xmlns=\"http://www.onvif.org/ver10/device/wsdl\"><Category>All</Category></GetCapabilities>"),
-                "GetCapabilities", null, null, deviceOpts);
+                "GetCapabilities");
             JsonNode cap = XML_MAPPER.readTree(capXml.getBytes()).get("Body").get("GetCapabilitiesResponse");
             out.set("capabilities", cap);
           }
@@ -846,7 +822,7 @@ public class onvif {
           if (baselineAll ? deviceInfo != Boolean.FALSE : deviceInfo == Boolean.TRUE) {
             String infoXml = parent.postSoap(t, t.url, buildSoapEnvelope(t.user, t.pass,
                 "<GetDeviceInformation xmlns=\"http://www.onvif.org/ver10/device/wsdl\"/>"),
-                "GetDeviceInformation", null, null, deviceOpts);
+                "GetDeviceInformation");
             JsonNode info = XML_MAPPER.readTree(infoXml.getBytes()).get("Body").get("GetDeviceInformationResponse");
             out.set("deviceInfo", info);
           }
@@ -854,7 +830,7 @@ public class onvif {
           if (baselineAll ? systemTime != Boolean.FALSE : systemTime == Boolean.TRUE) {
             String timeXml = parent.postSoap(t, t.url, buildSoapEnvelope(t.user, t.pass,
                 "<GetSystemDateAndTime xmlns=\"http://www.onvif.org/ver10/device/wsdl\"/>"),
-                "GetSystemDateAndTime", null, null, deviceOpts);
+                "GetSystemDateAndTime");
             JsonNode time = XML_MAPPER.readTree(timeXml.getBytes()).get("Body").get("GetSystemDateAndTimeResponse");
             out.set("systemTime", time);
           }
@@ -862,7 +838,7 @@ public class onvif {
           if (baselineAll ? services != Boolean.FALSE : services == Boolean.TRUE) {
             String servicesXml = parent.postSoap(t, t.url, buildSoapEnvelope(t.user, t.pass,
                 "<GetServices xmlns=\"http://www.onvif.org/ver10/device/wsdl\"><IncludeCapability>true</IncludeCapability></GetServices>"),
-                "GetServices", null, null, deviceOpts);
+                "GetServices");
             JsonNode servicesNode = XML_MAPPER.readTree(servicesXml.getBytes()).get("Body").get("GetServicesResponse");
             out.set("services", servicesNode);
           }
@@ -870,7 +846,7 @@ public class onvif {
           if (baselineAll ? eventProperties != Boolean.FALSE : eventProperties == Boolean.TRUE) {
             String eventsXml = parent.postSoap(t, t.url, buildSoapEnvelope(t.user, t.pass,
                 "<GetEventProperties xmlns=\"http://www.onvif.org/ver10/events/wsdl\"/>"),
-                "GetEventProperties", null, null, deviceOpts);
+                "GetEventProperties");
             JsonNode eventsNode = XML_MAPPER.readTree(eventsXml.getBytes()).get("Body")
                 .get("GetEventPropertiesResponse");
             out.set("eventProperties", eventsNode);
@@ -918,7 +894,7 @@ public class onvif {
           }
           String capRes = parent.postSoap(t, t.url, buildSoapEnvelope(t.user, t.pass,
               "<GetCapabilities xmlns=\"http://www.onvif.org/ver10/device/wsdl\"><Category>All</Category></GetCapabilities>"),
-              "GetCapabilities", null, null, deviceOpts);
+              "GetCapabilities");
           SoapEnvelope capEnv = parent.xmlToEnvelope(capRes);
           String eventsUrl = capEnv.getEventsXAddr();
           if (eventsUrl == null || eventsUrl.isBlank())
@@ -929,7 +905,7 @@ public class onvif {
           log.info("Subscribing to: {}", eventsUrl);
           String subSoap = buildSoapEnvelope(t.user, t.pass,
               "<CreatePullPointSubscription xmlns=\"http://www.onvif.org/ver10/events/wsdl\"/>");
-          String subRes = parent.postSoap(t, eventsUrl, subSoap, "CreatePullPointSubscription", null, null, deviceOpts);
+          String subRes = parent.postSoap(t, eventsUrl, subSoap, "CreatePullPointSubscription");
           SoapEnvelope subEnv = parent.xmlToEnvelope(subRes);
           String subAddr = subEnv.getSubscriptionAddress();
           if (subAddr == null)
@@ -944,7 +920,7 @@ public class onvif {
                       "<Timeout>PT" + pullTimeout + "S</Timeout>" +
                       "<MessageLimit>" + messageLimit + "</MessageLimit></PullMessages>");
 
-              String pullRes = parent.postSoap(t, subAddr, pullSoap, "PullMessages", null, null, deviceOpts);
+              String pullRes = parent.postSoap(t, subAddr, pullSoap, "PullMessages");
               SoapEnvelope pullEnv = parent.xmlToEnvelope(pullRes);
 
               PullMessagesResponse pmRes = pullEnv.getPullMessagesResponse();
@@ -1014,6 +990,14 @@ public class onvif {
 
       t.user = (userOverride != null) ? userOverride : profile.user;
       t.pass = (passOverride != null) ? passOverride : profile.pass;
+
+      // Resolve options precedence: local > parent.deviceOpts > default
+      t.timeout = (local != null && local.timeout != null) ? local.timeout
+          : (deviceOpts.timeout != null ? deviceOpts.timeout : 5);
+      t.retries = (local != null && local.retries != null) ? local.retries
+          : (deviceOpts.retries != null ? deviceOpts.retries : 3);
+      t.dryRun = (local != null && local.dryRun != null) ? local.dryRun
+          : (deviceOpts.dryRun != null ? deviceOpts.dryRun : false);
 
       if (t.url == null)
         throw new RuntimeException("Target URL missing. Run 'device register' or pass URL.");
@@ -1110,25 +1094,25 @@ public class onvif {
     }
 
     private String postSoap(DeviceProfile t, String url, String xml, String action) {
-      return postSoap(t, url, xml, action, null, null, null);
+      return postSoap(t, url, xml, action, null);
     }
 
     private String postSoap(DeviceProfile t, String url, String xml, String action, String soapAction) {
-      return postSoap(t, url, xml, action, soapAction, null, null);
+      return postSoap(t, url, xml, action, soapAction, null);
     }
 
     private String postSoap(DeviceProfile t, String url, String xml, String action, String soapAction,
-        String contentTypeOverride, DeviceOptions local) {
+        String contentTypeOverride) {
       log.trace("[{}] [{}] POST {}: {}", t.alias, action, url, xml);
       int attempts = 0;
-      int maxRetries = getEffectiveRetries(local);
+      int maxRetries = t.retries;
       try {
         while (true) {
           try {
             attempts++;
 
             HttpClient client = HttpClient.newBuilder()
-                .connectTimeout(java.time.Duration.ofSeconds(getEffectiveTimeout(local)))
+                .connectTimeout(java.time.Duration.ofSeconds(t.timeout))
                 .version(HttpClient.Version.HTTP_1_1)
                 .build();
             String contentType = contentTypeOverride != null ? contentTypeOverride
@@ -1267,8 +1251,8 @@ public class onvif {
 
     private void sendProbes(InetAddress source, Set<String> initial, Set<String> discovered, Set<String> discoveredNew,
         boolean silent, DeviceOptions local) {
-      int effTimeout = getEffectiveTimeout(local);
-      int effRetries = getEffectiveRetries(local);
+      int effTimeout = (local != null && local.timeout != null) ? local.timeout : 5;
+      int effRetries = (local != null && local.retries != null) ? local.retries : 3;
       int windowMillis = (effTimeout * 1000) / effRetries;
 
       try (DatagramSocket socket = new DatagramSocket(new InetSocketAddress(source, 0))) {
@@ -1377,6 +1361,9 @@ public class onvif {
 
   static class DeviceProfile {
     public String alias, url, user, pass;
+    public int timeout = 5;
+    public int retries = 3;
+    public boolean dryRun = false;
 
     public DeviceProfile() {
     }
