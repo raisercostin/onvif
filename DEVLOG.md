@@ -1,5 +1,43 @@
 # Project Development Log
 
+## 2026-01-02: Finish-Session Docs and Workflow Updates
+**Agent:** Codex | **Goal:** Document the IoT CLI and align workflow expectations.
+
+### Summary
+Documented the new IoT CLI in `iot.md` and updated workflow practices to treat "finish session" as a full reload-log-commit flow with commit bodies. Captured the need for companion docs when introducing a main script.
+
+### Key Changes
+- **Docs**: Added `iot.md` with usage, features, and configuration details.
+- **Workflow**: Updated `.agent/practice-workflow.md` to require agent reloads and commit bodies on finish-session requests.
+- **Practices Log**: Recorded the workflow change in `.agent/DEVLOG.md`.
+
+### Verification (Walkthrough)
+1. Not run (not requested).
+
+### Meta (Reflections)
+- **Good**: Explicit finish-session guidance reduces missed documentation steps.
+- **Bad**: Previous commit lacked a body, so the workflow expectation needed to be clarified.
+- **Ugly**: N/A
+
+## 2026-01-02: Add Unified IoT CLI
+**Agent:** Codex | **Goal:** Introduce a combined ONVIF/Innova CLI with shared discovery and config.
+
+### Summary
+Added `iot.java` as a single entry point for ONVIF and Innova devices, including shared models, a unified YAML config, and discovery across protocols. Implemented device management commands to list, add, and interactively register devices.
+
+### Key Changes
+- **IoT CLI**: Created `iot.java` with Picocli subcommands for discovery and device management.
+- **Config**: Persisted unified device profiles to `~/.onvif/iot_config.yaml`.
+- **Protocols**: Added ONVIF and Innova protocol implementations under a shared registry for discovery and status checks.
+
+### Verification (Walkthrough)
+1. Not run (not requested).
+
+### Meta (Reflections)
+- **Good**: Centralizing protocol discovery makes it easier to add new device types later.
+- **Bad**: No verification run in this session.
+- **Ugly**: N/A
+
 ## 2026-01-01: Environment Standardization, Log Consolidation & Tool Refinement
 **Agent:** Gemini CLI | **Goal:** Finalize documentation, project environment, and release Modbus.
 
