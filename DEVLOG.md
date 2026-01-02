@@ -1,5 +1,34 @@
 # Project Development Log
 
+## 2026-01-01: Environment Standardization, Log Consolidation & Tool Refinement
+**Agent:** Gemini CLI | **Goal:** Finalize documentation, project environment, and release Modbus.
+
+### Summary
+Created `.editorconfig` to enforce formatting standards, consolidated fragmented `*_walkthrough.md` files into the central `DEVLOG.md`, and refined project practices to mandate modern tools like `fd` and `rg`. Renamed documentation files for consistency and GitHub compatibility.
+
+### Key Changes
+- **Environment**: Added `.editorconfig` with standard whitespace and indentation rules (4 spaces for Java, 2 for others).
+- **Modbus Documentation**: Renamed `modbus_readme.md` to `modbus.md`.
+- **Cleanup**: Deleted `innova_walkthrough.md` and `modbus_walkthrough.md` after consolidating their verification and meta history into this file.
+- **Practices**: Updated `practice-tools.md` to prefer `fd` over `find` and documented `which -a` for debugging binary collisions.
+- **Agent Practices**: Renamed `.agent/practice-index.md` to `.agent/README.md` for GitHub compatibility.
+- **Tools**: Established `bashw` and `fd`/`rg` as the standard toolset for development.
+
+### Verification (Walkthrough)
+1. `ls .editorconfig`: Verify file exists.
+2. `bashw -c "fd walkthrough"`: Confirm redundant files are removed.
+3. `bashw -c "ls modbus.md"`: Confirm the main documentation exists.
+4. `bashw -c "ls .agent/README.md"`: Confirm the agent practice index is renamed.
+
+### Meta (Reflections)
+- **Good**: Using `fd` instead of `find` is much cleaner and avoids the Windows path collision issues. Consolidating into a single `DEVLOG.md` significantly reduces root directory clutter.
+- **Bad**: 
+    - **Documentation Fragmentation**: Having separate walkthrough files led to "lost" history when they were deleted. Consolidation into `DEVLOG.md` prevents this.
+    - **Tool Collisions**: Initial reliance on `find` caused failures on Windows. Switching to `fd` resolved this.
+- **Ugly**: 
+    - **PowerShell vs Bash**: The agent repeatedly defaulted to PowerShell syntax (`ls`, `mv`) which behaves differently than GNU tools. Explicitly using `bashw -c` or `which -a` is the only robust fix.
+    - **Regex Stack Overflow**: Attempting complex regex replacements on large Java files caused agent tool failures. The solution was full file rewrites for reliable cleaning.
+
 ## 2026-01-01: Modbus CLI Implementation & Practice Standardization
 **Agent:** Gemini CLI | **Goal:** Port Modbusync to JBang CLI and cleanup project practices.
 
@@ -15,12 +44,43 @@ Rewrote the multi-module Maven `Modbusync` project into a single-file `modbus.ja
 - **Workflow**: Established `DEVLOG.md` as the source of truth for project history.
 
 ### Verification (Walkthrough)
-To verify this session's work:
-1. `jbang run modbus.java --help`: Verify CLI help structure.
-2. `jbang run modbus_test.java`: Run the 8 automated integration tests.
-3. `jbang run modbus.java backup`: Confirm it falls back to Holding 0-9 and stdout correctly.
+1. **Compilation**: `jbang run modbus.java --help` (Verify CLI help structure and availability of standard options).
+2. **Automated Tests**: `jbang run modbus_test.java` (All 8 integration tests pass).
+3. **Manual Check**: `jbang run modbus.java backup` (Verify default fallback to Holding 0-9 and stdout correctly).
+4. **Device Check**: `jbang run modbus.java device add test -tcp 127.0.0.1` followed by `device list`.
 
 ### Meta (Reflections)
-- **Good**: Transitioning to a single `DEVLOG.md` and Good/Bad/Ugly practices significantly improved project clarity.
-- **Bad**: Accidental "mega-commit" included non-source assets; refined `practice-workflow.md` to prevent this.
-- **Ugly**: Windows path friction and `powershell` tool defaults required explicit `bashw` shims and forward-slash conventions.
+- **Good**: 
+    - **Transitioning to DEVLOG**: Significantly improved project clarity.
+    - **Test-Driven Stability**: Writing `modbus_test.java` with `AssertJ` provided a safety net during the major refactoring of `DeviceOptions`.
+    - **Robust CSV Handling**: Using `Jackson` with `CsvSchema` proved much cleaner than manual parsing for legacy metadata headers.
+- **Bad**: 
+    - **Mega-Commit**: Accidental inclusion of non-source assets; refined `practice-workflow.md` to prevent this.
+    - **Library Version Mismatches**: Assumptions about `j2mod` 3.x exposing static constants (`SerialParameters.NO_PARITY`) led to compilation failures (resolved via integer mapping).
+- **Ugly**: 
+    - **Shell Friction**: Windows path friction and `powershell` tool defaults required explicit `bashw` shims and forward-slash conventions.
+    - **Context Loss**: Initial attempt to read chat history JSON failed due to path restrictions, requiring reliance on context memory.
+
+### Documentation
+Refer to [modbus.md](modbus.md) for the complete command reference.
+
+## 2025-12-31: Innova Ventiloconvertor Integration
+**Agent:** Gemini CLI | **Goal:** Implement Innova 2.0 / AirLeaf control.
+
+### Summary
+Implemented a new CLI tool `innova.java` to discover, manage, and control Innova 2.0 / AirLeaf ventiloconvertors on the local network.
+
+### Key Changes
+- **New Tool**: Created `innova.java` mirroring the architecture of `onvif.java`.
+- **Discovery**: Implemented subnet scanning and persistent device aliases.
+- **Control**: Added `status` and `set` commands for remote control.
+- **Data Mapping**: Fixed JSON mapping for nested `RESULT` objects and scaled temperature integers.
+
+### Verification (Walkthrough)
+1. **Discovery**: `innova.java discover` finds devices.
+2. **Status**: `innova.java device list --check` reports correct temperature (e.g. 22.2°C).
+3. **Persistence**: Aliases are saved to `~/.innova/config.yaml`.
+
+### Meta (Reflections)
+- **Good**: Reusing `RichCli` allowed for rapid development of consistent UX.
+- **Bad**: Initial JSON mapping failed on integer scaling (reading 222 as 222°C instead of 22.2°C).
