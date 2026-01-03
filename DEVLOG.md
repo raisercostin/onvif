@@ -1,5 +1,31 @@
 # Project Development Log
 
+## 2026-01-03: Unified IoT CLI Consolidation & Probe Architecture
+**Agent:** Codex | **Goal:** Consolidate multiple IoT scripts into a single, extensible probe-based CLI.
+
+### Summary
+Successfully merged `onvif.java`, `modbus.java`, and `innova.java` into a unified `iot.java` tool. Introduced a flexible `Probe` architecture that supports discovery, status checking, device description, and protocol-specific actions (e.g., Modbus register polling, ONVIF PTZ stubs).
+
+### Key Changes
+- **Unified Tool (`iot.java`)**: Single entry point managing ONVIF, Innova, and Modbus devices with a shared YAML config.
+- **Probe Architecture**: Created a `Probe` interface enabling protocol-specific implementations for discovery, description, and actions.
+- **Improved Discovery UX**: Implemented live feedback (devices shown as found) and added Java 21 Virtual Thread support for parallel scanning.
+- **Action Framework**: Added `actions` and `call` commands to discover and execute protocol-specific operations using metadata-driven `ActionDesc` and `ParamDesc`.
+- **Advanced Device Management**: Added `device list --all` (integrated scan) and `device autoregister` for zero-config setup.
+- **TDD Foundation**: Developed `iot_test.java` alongside the features to verify integration and command hierarchy.
+
+### Verification (Walkthrough)
+1. `jbang run iot_test.java` -> All 8 integration tests passed.
+2. `jbang run iot.java probes` -> Confirmed onvif, innova, modbus registration.
+3. `jbang run iot.java discover -v` -> Verified live feedback and info-level progress logging.
+
+### Meta (Reflections)
+- **Good**: Transitioning to a shared `ExecutorService` made parallelism easier to manage and prepared the tool for Virtual Threads.
+- **Bad**: Multiple refactoring rounds led to nested brace errors; solved by incremental `read_file` verification.
+- **Ugly**: Modbus port scanning across 254 IPs is naturally slow; virtual threads and high parallelism are essential for acceptable UX.
+
+
+
 ## 2026-01-03: Unified Native IoT CLI
 **Agent:** Antigravity | **Goal:** Create `iot3.java` as a native, single-file CLI replacing `onvif.java`, `modbus.java`, `innova.java`.
 

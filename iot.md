@@ -1,41 +1,66 @@
-# IoT Context: Unified ONVIF and Innova CLI
+# IoT CLI (`iot.java`)
 
-## Project Overview
-This project provides a single command-line interface (CLI) for discovering and managing ONVIF cameras and Innova ventiloconvertors. It is designed as a single-file JBang script that shares a unified device registry and configuration file.
+A unified, extensible CLI for managing and interacting with various IoT devices (ONVIF, Innova, Modbus).
 
-## Key Features
-- **Unified Discovery:** Scans for ONVIF and Innova devices in one command.
-- **Device Registry:** Stores device aliases and credentials in a shared YAML config.
-- **Status Checks:** Reports device status via protocol-specific checks.
+## Architecture: Probes
+The tool is built around a **Probe** architecture. Each protocol (e.g., `onvif`, `modbus`, `innova`) implements a probe that handles:
+- **Discovery**: Scanning the network for devices.
+- **Liveness**: Checking device status.
+- **Description**: Dumping full device configuration or state.
+- **Actions**: Protocol-specific operations (PTZ, register polling, etc.).
 
-## Building and Running
+## Usage
 
-Since this project uses JBang, there is no traditional build step. The source files are compiled and executed on the fly.
-
-### Prerequisites
-- **Java:** JDK 11 or higher.
-- **JBang:** Must be installed and available in the path.
-
-### Execution
-Run the main application:
+### Discovery
+Discover all devices on the local network across all supported probes:
 ```bash
-jbang run iot.java [COMMAND] [FLAGS]
+jbang run iot.java discover
 ```
 
-**Common Commands:**
-*   `jbang run iot.java discover` - Scan for ONVIF and Innova devices.
-*   `jbang run iot.java device list` - List registered devices.
-*   `jbang run iot.java device list --check` - List devices with live status checks.
-*   `jbang run iot.java device add [alias] --type onvif --url [url] -u [user] -p [pass]` - Add a device.
-*   `jbang run iot.java device register` - Interactive discovery and registration.
+For Modbus, you can specify custom ports to scan:
+```bash
+jbang run iot.java discover --modbus.ports 502,8899
+```
 
-## Key Files
+### Device Management
+List registered devices and check their status:
+```bash
+jbang run iot.java device list --check
+```
 
-*   **`iot.java`**: The core CLI entry point. Defines shared models, protocol discovery, and device management commands.
-*   **`com/namekis/utils/RichCli.java`**: Shared utility for logging and console formatting.
+Scan the network and show both registered and new devices:
+```bash
+jbang run iot.java device list --all
+```
 
-## Development Conventions
+Automatically register all discovered devices with default credentials:
+```bash
+jbang run iot.java device autoregister
+```
 
-*   **Dependency Management:** Dependencies declared via JBang `//DEPS` directives.
-*   **Architecture:** Protocol implementations register into a shared registry for discovery and status checks.
-*   **Configuration:** Persistent configuration stored in YAML at `~/.onvif/iot_config.yaml`.
+### Actions & Execution
+List possible actions for a specific probe:
+```bash
+jbang run iot.java actions modbus
+```
+
+Execute an action on a device:
+```bash
+jbang run iot.java call <alias> poll -Paddress=0 -Pcount=10
+jbang run iot.java call <alias> set -Ppower=on -Ptemp=22.5
+```
+
+### Inspection
+Dump detailed information about a device:
+```bash
+jbang run iot.java describe <alias>
+```
+
+## Configuration
+Configuration is stored in `~/.onvif/iot_config.yaml`. It contains the list of registered devices and their credentials.
+
+## Testing
+Run the integration test suite:
+```bash
+jbang run iot_test.java
+```
