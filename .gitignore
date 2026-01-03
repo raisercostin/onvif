@@ -1,0 +1,8 @@
+*.class
+
+# Large capture files
+*.mkv
+*.mp4
+*.avi
+*.jpg
+*.exe

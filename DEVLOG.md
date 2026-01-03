@@ -1,5 +1,27 @@
 # Project Development Log
 
+## 2026-01-03: Unified Native IoT CLI
+**Agent:** Antigravity | **Goal:** Create `iot3.java` as a native, single-file CLI replacing `onvif.java`, `modbus.java`, `innova.java`.
+
+### Summary
+Created `iot3.java` with **native** integration for Onvif (UDP/SOAP), Modbus (j2mod), and Innova (HTTP). Replaced the earlier "shell-out" strategy with in-process logic to ensure zero external dependencies (aside from JBang libs). Updated `.gitignore` to exclude large media files.
+
+### Key Changes
+- **Native Implementation**: `iot3.java` now directly imports `j2mod` and uses Java `HttpClient` / `DatagramSocket` instead of shelling out.
+- **Probe Interface**: Unified `discover`, `checkStatus`, `describe` contract across all protocols.
+- **Testing**: Added `iot3_test.java` validating discovery and command dispatch.
+- **Ignore Rules**: Added `*.mkv`, `*.jpg` to `.gitignore` to prevent agent context overload.
+
+### Verification (Walkthrough)
+1. `jbang run iot3_test.java` -> All tests passed.
+2. `jbang run iot3.java discover` -> Validated logic compiles (device output depends on network).
+
+### Meta (Reflections)
+- **Good**: Pivot to native integration avoids fragility of shell parsing and process management. `iot3.java` is now a true self-contained tool.
+- **Bad**: Compilation error (rogue backticks) slowed down verification.
+- **Ugly**: Large capture files (`.mkv` > 1GB) were cluttering the workspace; ignore rules added but deletion was aborted per user request.
+
+
 ## 2026-01-03: Document IoT2 CLI
 **Agent:** Codex | **Goal:** Add usage documentation for the probe-based IoT2 CLI.
 
